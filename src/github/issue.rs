@@ -1,7 +1,7 @@
 //! Fetch a GitHub issue and render it as Markdown.
 
 use crate::github::{
-    FetchError, GitHubUrl, Label, User, author_login, gh, label_names, push_verbatim,
+    Error, GitHubUrl, Label, User, author_login, gh_json, label_names, push_verbatim,
     write_markdown,
 };
 use serde::Deserialize;
@@ -35,30 +35,46 @@ struct Comment {
     created_at: String,
 }
 
+/// A fetched issue: its title and the rendered Markdown.
+pub(crate) struct FetchedIssue {
+    pub(crate) title: String,
+    pub(crate) markdown: String,
+}
+
 /// Fetch `url` with `gh` and write `<dir>/issue.md`.
 ///
 /// # Errors
 ///
 /// Returns an error if the URL is not a GitHub issue, `gh` is missing or fails,
 /// its JSON cannot be parsed, or the output cannot be written.
-pub(crate) fn fetch_issue(url: &str, dir: &Path) -> Result<(), FetchError> {
+pub(crate) fn fetch_issue(url: &str, dir: &Path) -> Result<(), Error> {
     let issue_ref: GitHubUrl = url.parse()?;
+    write_markdown(dir, ISSUE_FILE, &fetch(&issue_ref)?.markdown)
+}
+
+/// Fetch an issue with `gh` and render it as Markdown.
+///
+/// # Errors
+///
+/// Returns an error if the reference is not an issue, `gh` fails, or its JSON is invalid.
+pub(crate) fn fetch(issue_ref: &GitHubUrl) -> Result<FetchedIssue, Error> {
     issue_ref.expect_issue()?;
     let issue_url = issue_ref.to_string();
-
-    let bytes = gh(
+    let issue: Issue = gh_json(
         "issue view",
         &["issue", "view", &issue_url, "--json", ISSUE_JSON_FIELDS],
     )?;
-    let issue: Issue = serde_json::from_slice(&bytes).map_err(FetchError::GhJson)?;
 
     // GitHub shares numbering between issues and pull requests, so an
     // /issues/<n> URL can resolve to a pull request.
     if is_pull_request(&issue.url) {
-        return Err(FetchError::NotAnIssue(issue.url));
+        return Err(Error::NotAnIssue(issue.url));
     }
 
-    write_markdown(dir, ISSUE_FILE, &render_issue(&issue))
+    Ok(FetchedIssue {
+        markdown: render_issue(&issue),
+        title: issue.title,
+    })
 }
 
 fn is_pull_request(url: &str) -> bool {

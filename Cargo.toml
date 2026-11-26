@@ -1,8 +1,8 @@
 [package]
-name = "software-factory-runtime"
+name = "agentd"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Event-driven orchestrator for autonomous AI software workflows"
 
 [dependencies]

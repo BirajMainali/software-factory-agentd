@@ -1,63 +1,231 @@
-//! Run the main session, or continue it with another prompt.
+//! Client for the local opencode service API. The runtime creates sessions, sends
+//! prompts, and reads only lifecycle facts back: when a run ended and with which
+//! outcome. It never reads what agents wrote.
+//!
+//! The service writes its address and access key to `service.json`; the key goes to
+//! `curl` through stdin, never argv, logs, or events.
 
+use crate::process;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const RUN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const RUN_POLL: Duration = Duration::from_secs(3);
+const SERVICE_USER: &str = "opencode";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error("failed to run opencode: {0}")]
-    Run(#[source] std::io::Error),
-    #[error("opencode failed: {0}")]
-    Failed(String),
-    #[error("opencode did not report a session id")]
-    NoSession,
+    #[error("cannot read the opencode service file {path} (is opencode running?): {reason}")]
+    Service { path: PathBuf, reason: String },
+    #[error("failed to call the opencode service: {0}")]
+    Call(#[from] process::Error),
+    #[error("opencode {method} {path} failed with HTTP {status}")]
+    Status {
+        method: &'static str,
+        path: String,
+        status: u16,
+    },
+    #[error("opencode {path} returned an unexpected response")]
+    Response { path: String },
+    #[error("session {0} did not finish within {secs}s", secs = RUN_TIMEOUT.as_secs())]
+    RunTimedOut(String),
 }
 
-pub(crate) struct OpenCode;
+/// How a session's run ended, as opencode records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Outcome {
+    Succeeded,
+    Failed,
+    Interrupted,
+}
 
-impl OpenCode {
-    /// Run `opencode` with a prompt and return the session id. With no session,
-    /// a new main session starts; with one, that session continues.
-    pub(crate) fn spawn(
+/// A session to create.
+pub(crate) struct NewSession<'a> {
+    pub(crate) title: &'a str,
+    /// Working directory; a child inherits its parent's.
+    pub(crate) directory: Option<&'a Path>,
+    pub(crate) parent: Option<&'a str>,
+    pub(crate) agent: Option<&'a str>,
+}
+
+pub(crate) struct Client {
+    url: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct Service {
+    url: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct Data<T> {
+    data: T,
+}
+
+#[derive(Deserialize)]
+struct SessionInfo {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct IdleMessage {
+    id: String,
+    outcome: Outcome,
+}
+
+impl Client {
+    /// Connect to the running opencode service.
+    pub(crate) fn connect() -> Result<Self, Error> {
+        let path = service_file();
+        let service_error = |reason: String| Error::Service {
+            path: path.clone(),
+            reason,
+        };
+        let text = fs::read_to_string(&path).map_err(|error| service_error(error.to_string()))?;
+        let service: Service =
+            serde_json::from_str(&text).map_err(|error| service_error(error.to_string()))?;
+        Ok(Self {
+            url: service.url,
+            key: service.password,
+        })
+    }
+
+    pub(crate) fn create_session(&self, new: &NewSession<'_>) -> Result<String, Error> {
+        let body = json!({
+            "title": new.title,
+            "location": new.directory.map(|dir| json!({ "directory": dir })),
+            "parentID": new.parent,
+            "agent": new.agent,
+        });
+        let created: Data<SessionInfo> = self.call_json("POST", "/api/session", Some(&body))?;
+        Ok(created.data.id)
+    }
+
+    /// Start a run of `session` with `text` as its input.
+    pub(crate) fn prompt(&self, session: &str, text: &str) -> Result<(), Error> {
+        let path = format!("/api/session/{session}/prompt");
+        self.call("POST", &path, Some(&json!({ "text": text })))?;
+        Ok(())
+    }
+
+    /// Stop the session's run, if it is running.
+    pub(crate) fn interrupt(&self, session: &str) -> Result<(), Error> {
+        self.call("POST", &format!("/api/session/{session}/interrupt"), None)?;
+        Ok(())
+    }
+
+    /// Id of the session's latest finished run, if any.
+    pub(crate) fn last_run(&self, session: &str) -> Result<Option<String>, Error> {
+        Ok(self.latest_idle(session)?.map(|idle| idle.id))
+    }
+
+    /// Wait for a run that finishes after `after` (a [`Client::last_run`] id) and
+    /// return how it ended.
+    pub(crate) fn wait_for_run(
         &self,
-        session: Option<&str>,
-        prompt: &str,
-        title: Option<&str>,
+        session: &str,
+        after: Option<&str>,
+    ) -> Result<Outcome, Error> {
+        let deadline = Instant::now() + RUN_TIMEOUT;
+        loop {
+            if let Some(idle) = self.latest_idle(session)?
+                && Some(idle.id.as_str()) != after
+            {
+                return Ok(idle.outcome);
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::RunTimedOut(session.to_string()));
+            }
+            thread::sleep(RUN_POLL);
+        }
+    }
+
+    /// Whether the session's agent is running now.
+    pub(crate) fn is_running(&self, session: &str) -> Result<bool, Error> {
+        let active: Data<serde_json::Map<String, Value>> =
+            self.call_json("GET", "/api/session/active", None)?;
+        Ok(active.data.contains_key(session))
+    }
+
+    fn latest_idle(&self, session: &str) -> Result<Option<IdleMessage>, Error> {
+        let path = format!("/api/session/{session}/message?type=idle&order=desc&limit=1");
+        let idle: Data<Vec<IdleMessage>> = self.call_json("GET", &path, None)?;
+        Ok(idle.data.into_iter().next())
+    }
+
+    fn call_json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<T, Error> {
+        let text = self.call(method, path, body)?;
+        serde_json::from_str(&text).map_err(|_| Error::Response {
+            path: path.to_string(),
+        })
+    }
+
+    /// One HTTP call through `curl`; the access key goes in via stdin config.
+    fn call(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&Value>,
     ) -> Result<String, Error> {
-        let mut command = Command::new("opencode");
-        command.args(["run", "--format", "json"]);
-        if let Some(session) = session {
-            command.args(["--session", session]);
+        let mut command = Command::new("curl");
+        command
+            .args([
+                "--silent",
+                "--show-error",
+                "--config",
+                "-",
+                "--request",
+                method,
+            ])
+            .args(["--header", "Content-Type: application/json"])
+            .args(["--write-out", "\n%{http_code}"]);
+        if let Some(body) = body {
+            command.arg("--data-binary").arg(body.to_string());
         }
-        if let Some(title) = title {
-            command.args(["--title", title]);
+        command.arg(format!("{}{path}", self.url));
+        let config = format!("user = \"{SERVICE_USER}:{}\"\n", escape_config(&self.key));
+        let output = process::run_with_input(&mut command, &config, REQUEST_TIMEOUT)?;
+
+        let response_error = || Error::Response {
+            path: path.to_string(),
+        };
+        let (response, status) = output.stdout.rsplit_once('\n').ok_or_else(response_error)?;
+        let status: u16 = status.trim().parse().map_err(|_| response_error())?;
+        if !(200..300).contains(&status) {
+            return Err(Error::Status {
+                method,
+                path: path.to_string(),
+                status,
+            });
         }
-        let output = command.arg(prompt).output().map_err(Error::Run)?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            // Failures are sometimes reported on stdout in JSON mode.
-            let message = if stderr.trim().is_empty() {
-                stdout
-            } else {
-                stderr
-            };
-            return Err(Error::Failed(message.trim().to_string()));
-        }
-        session_id(&String::from_utf8_lossy(&output.stdout))
-            .or_else(|| session.map(str::to_string))
-            .ok_or(Error::NoSession)
+        Ok(response.to_string())
     }
 }
 
-fn session_id(stdout: &str) -> Option<String> {
-    stdout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Event>(line).ok())
-        .find_map(|event| event.session_id)
+/// `$XDG_STATE_HOME/opencode/service.json`, else `~/.local/state/opencode/service.json`.
+fn service_file() -> PathBuf {
+    env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .unwrap_or_default()
+        .join("opencode/service.json")
 }
 
-#[derive(serde::Deserialize)]
-struct Event {
-    #[serde(rename = "sessionID")]
-    session_id: Option<String>,
+fn escape_config(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }

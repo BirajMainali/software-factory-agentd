@@ -1,35 +1,14 @@
-//! Workflow events. Every stage runs in its own session under the main session.
-//! Not wired into the runtime yet.
-#![allow(dead_code)]
+//! Task workflow: the route between steps, the event log it is replayed from, and
+//! the worker that routes one task along it.
 
-mod machine;
+mod event;
+mod log;
+mod state;
+mod step;
+mod worker;
 
-pub(crate) struct Event {
-    pub(crate) session_id: String,
-    pub(crate) parent_session_id: String,
-    pub(crate) stage: Stage,
-}
-
-pub(crate) enum Stage {
-    Planning(Phase),
-    Development(Phase),
-    Review(Review),
-}
-
-pub(crate) enum Review {
-    Security(Phase),
-    Code(CodeReview),
-    UiUx(CodeReview),
-}
-
-pub(crate) enum Phase {
-    Started,
-    Completed,
-}
-
-pub(crate) enum CodeReview {
-    Started,
-    Completed,
-    ChangeRequested(String),
-    NeedMoreEvidence(String),
-}
+pub(crate) use event::Event;
+pub(crate) use log::{Error as LogError, Log, now, read as read_log};
+pub(crate) use state::TaskState;
+pub(crate) use step::Step;
+pub(crate) use worker::Worker;

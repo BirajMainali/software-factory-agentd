@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Software Factory</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --text: #1f2328; --muted: #656d76; --line: #d8dee4; --panel: #f6f8fa;
+    --accent: #0969da; --good: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --text: #e6edf3; --muted: #8d96a0; --line: #30363d; --panel: #161b22;
+      --accent: #4493f8; --good: #3fb950; --warn: #d29922; --bad: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 2rem; color: var(--text); }
+  header { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.25rem; margin: 0; }
+  #connection, .muted { color: var(--muted); }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-weight: 600; color: var(--muted); font-size: .8125rem; }
+  td.num { font-variant-numeric: tabular-nums; }
+
+  a.icon { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); padding: 2px; border-radius: 4px; text-decoration: none; font-variant-numeric: tabular-nums; }
+  a.icon:hover { color: var(--accent); }
+  a.icon svg { width: 16px; height: 16px; }
+
+  .pipeline { display: flex; gap: 3px; }
+  .pipeline span { width: 22px; height: 6px; border-radius: 3px; background: var(--line); }
+  .pipeline span.done { background: var(--good); }
+  .pipeline span.now { background: var(--accent); }
+  .pipeline.stuck span.now { background: var(--bad); }
+  .pipeline.backing_off span.now { background: var(--warn); }
+  .title { margin-left: .5rem; }
+  .stage { font-size: .8125rem; color: var(--muted); margin-top: 2px; }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+  .you { color: var(--accent); font-weight: 600; }
+
+  #empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Software Factory</h1>
+  <span id="connection">Connecting…</span>
+</header>
+
+<table>
+  <thead>
+    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>For</th></tr>
+  </thead>
+  <tbody id="tasks"></tbody>
+</table>
+<p id="empty" hidden>No tasks yet.</p>
+
+<script>
+  const ICONS = {
+    issue: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.25"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/></svg>',
+  };
+  const tbody = document.getElementById("tasks");
+  let tasks = [];
+
+  function iconLink(url, icon, label, text) {
+    if (!url || !url.startsWith("https://github.com/")) {
+      const none = document.createElement("span");
+      none.className = "muted";
+      none.textContent = "—";
+      return none;
+    }
+    const a = document.createElement("a");
+    a.className = "icon";
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = label;
+    a.setAttribute("aria-label", label);
+    a.innerHTML = ICONS[icon];
+    if (text) a.append(text);
+    a.addEventListener("click", (event) => event.stopPropagation());
+    return a;
+  }
+
+  function ago(ts) {
+    if (!ts) return "—";
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    return duration(seconds);
+  }
+
+  function duration(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
+    return `${Math.floor(seconds / 86400)}d ${Math.floor(seconds % 86400 / 3600)}h`;
+  }
+
+  /** Why a task is held back, if it is: "stuck", "backing_off", or "". */
+  function held(task) {
+    if (task.stuck) return "stuck";
+    if (task.retry_at && task.retry_at > Math.floor(Date.now() / 1000)) return "backing_off";
+    return "";
+  }
+
+  function pipeline(task) {
+    const wrap = document.createElement("div");
+    const bar = document.createElement("div");
+    bar.className = `pipeline ${held(task)}`;
+    for (let index = 0; index < task.steps; index++) {
+      const segment = document.createElement("span");
+      if (index < task.step) segment.className = "done";
+      else if (index === task.step) segment.className = "now";
+      bar.append(segment);
+    }
+    const label = document.createElement("div");
+    label.className = "stage";
+    label.textContent = task.agent ? `step ${task.step + 1} of ${task.steps}` : "all steps done";
+    wrap.append(bar, label);
+    return wrap;
+  }
+
+  function cell(row, content, className) {
+    const td = row.insertCell();
+    if (content instanceof Node) td.append(content); else td.textContent = content;
+    if (className) td.className = className;
+    return td;
+  }
+
+  /** Plain-words current state, and how to color it. */
+  function now(task) {
+    if (task.unreadable) return ["log unreadable", "bad"];
+    if (held(task) === "stuck") return [`stuck: ${task.last_failure ?? "out of retries"}`, "bad"];
+    if (held(task) === "backing_off") {
+      const seconds = task.retry_at - Math.floor(Date.now() / 1000);
+      return [`failed, retrying in ${duration(seconds)}`, "warn"];
+    }
+    if (!task.agent) return ["waiting for you", "you"];
+    return [`${task.agent} ${task.running ? "working" : "next"}`, ""];
+  }
+
+  function renderTable() {
+    tbody.replaceChildren();
+    document.getElementById("empty").hidden = tasks.length > 0;
+    for (const task of tasks) {
+      const row = tbody.insertRow();
+      cell(row, task.repo);
+      const issue = cell(row, iconLink(task.issue, "issue", `Open issue #${task.number}`, `#${task.number}`));
+      if (task.title) {
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = task.title;
+        issue.append(title);
+      }
+      cell(row, pipeline(task));
+      const [text, tone] = now(task);
+      const state = cell(row, text, tone);
+      if (task.last_failure) state.title = task.last_failure;
+      cell(row, ago(task.since), "num");
+    }
+  }
+
+  const connection = document.getElementById("connection");
+  const events = new EventSource("/events");
+  events.onopen = () => { connection.textContent = "Live"; };
+  events.onerror = () => { connection.textContent = "Disconnected, retrying…"; };
+  events.onmessage = (message) => { tasks = JSON.parse(message.data); renderTable(); };
+</script>
+</body>
+</html>
