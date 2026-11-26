@@ -5,8 +5,17 @@ workflows across multiple projects and repositories.
 
 ## Layout
 
-Single binary crate. Entrypoint: `src/main.rs`. Not a workspace yet; add modules here
-and split into a workspace only when a second binary or crate appears. No CI yet.
+Single binary crate. Entrypoint: `src/main.rs`. Modules live in feature folders:
+
+```
+src/main.rs          CLI dispatch
+src/github/          GitHub URL/client, issue and PR fetching
+src/opencode/        agent session spawn
+src/workflow/        workflow events
+```
+
+Not a workspace yet; add modules here and split into a workspace only when a second
+binary or crate appears. No CI yet.
 
 ## Architecture (target)
 

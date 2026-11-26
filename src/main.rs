@@ -1,7 +1,6 @@
 mod github;
-mod issue;
 mod opencode;
-mod pr;
+mod workflow;
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -23,11 +22,11 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match args {
         [command, url, dir] if command == "fetch-issue" => {
-            issue::fetch_issue(url, Path::new(dir))?;
+            github::issue::fetch_issue(url, Path::new(dir))?;
             Ok(ExitCode::SUCCESS)
         }
         [command, url, dir] if command == "fetch-pr" => {
-            pr::fetch_pr(url, Path::new(dir))?;
+            github::pr::fetch_pr(url, Path::new(dir))?;
             Ok(ExitCode::SUCCESS)
         }
         [command, rest @ ..] if command == "spawn" => cmd_spawn(rest),

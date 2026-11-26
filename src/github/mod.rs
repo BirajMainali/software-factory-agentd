@@ -1,5 +1,8 @@
 //! Shared GitHub URL parsing, data types, and `gh` command helpers.
 
+pub(crate) mod issue;
+pub(crate) mod pr;
+
 use serde::Deserialize;
 use std::fmt;
 use std::fs;
