@@ -2,8 +2,10 @@
 
 pub(crate) mod issue;
 pub(crate) mod pr;
+pub(crate) mod pulls;
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
@@ -11,10 +13,13 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
+use std::time::Duration;
+
+const GH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Errors returned while resolving, fetching, or writing GitHub data.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum FetchError {
+pub(crate) enum Error {
     #[error(
         "expected a full URL like https://github.com/owner/repo/issues/123 \
          or https://github.com/owner/repo/pull/123"
@@ -29,7 +34,7 @@ pub(crate) enum FetchError {
     #[error("{0} is not a pull request")]
     NotAPullRequest(String),
     #[error("failed to run gh (is GitHub CLI installed?): {0}")]
-    GhSpawn(#[source] std::io::Error),
+    Gh(#[source] crate::process::Error),
     #[error("gh {command} failed: {message}")]
     GhFailed {
         command: &'static str,
@@ -77,20 +82,25 @@ pub(crate) struct GitHubUrl {
 }
 
 impl GitHubUrl {
-    pub(crate) fn expect_issue(&self) -> Result<(), FetchError> {
+    pub(crate) fn expect_issue(&self) -> Result<(), Error> {
         if self.kind == Kind::Issue {
             Ok(())
         } else {
-            Err(FetchError::NotAnIssue(self.to_string()))
+            Err(Error::NotAnIssue(self.to_string()))
         }
     }
 
-    pub(crate) fn expect_pull(&self) -> Result<(), FetchError> {
+    pub(crate) fn expect_pull(&self) -> Result<(), Error> {
         if self.kind == Kind::Pull {
             Ok(())
         } else {
-            Err(FetchError::NotAPullRequest(self.to_string()))
+            Err(Error::NotAPullRequest(self.to_string()))
         }
+    }
+
+    /// `owner/repo`, as `gh -R` expects.
+    pub(crate) fn repo_slug(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
     }
 
     pub(crate) fn repo_path(&self, suffix: &str) -> String {
@@ -99,35 +109,30 @@ impl GitHubUrl {
 }
 
 impl FromStr for GitHubUrl {
-    type Err = FetchError;
+    type Err = Error;
 
     fn from_str(url: &str) -> Result<Self, Self::Err> {
         let Some(rest) = url.strip_prefix("https://github.com/") else {
-            return Err(FetchError::InvalidUrl);
+            return Err(Error::InvalidUrl);
         };
         let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
-        if parts.len() != 4 {
-            return Err(FetchError::InvalidUrl);
-        }
+        let [owner, repo, resource, number] = parts.as_slice() else {
+            return Err(Error::InvalidUrl);
+        };
 
-        let kind = match parts[2] {
+        let kind = match *resource {
             "issues" => Kind::Issue,
             "pull" => Kind::Pull,
-            _ => return Err(FetchError::InvalidUrl),
+            _ => return Err(Error::InvalidUrl),
         };
-        let (owner, repo, number) = (parts[0], parts[1], parts[3]);
         for part in [owner, repo] {
-            let valid = !part.is_empty()
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-            if !valid {
-                return Err(FetchError::InvalidRepo(part.to_string()));
+            if !is_valid_name(part) {
+                return Err(Error::InvalidRepo(part.to_string()));
             }
         }
 
         let Ok(number) = number.parse::<NonZeroU64>() else {
-            return Err(FetchError::InvalidNumber(number.to_string()));
+            return Err(Error::InvalidNumber(number.to_string()));
         };
 
         Ok(Self {
@@ -153,29 +158,37 @@ impl fmt::Display for GitHubUrl {
     }
 }
 
+/// A GitHub owner or repository name. Also safe as a path component: never `.` or `..`.
+pub(crate) fn is_valid_name(part: &str) -> bool {
+    !part.is_empty()
+        && !matches!(part, "." | "..")
+        && part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// Run `gh` with a non-interactive environment and return its stdout.
-pub(crate) fn gh(label: &'static str, args: &[&str]) -> Result<Vec<u8>, FetchError> {
-    let output = Command::new("gh")
+pub(crate) fn gh(label: &'static str, args: &[&str]) -> Result<Vec<u8>, Error> {
+    let mut command = Command::new("gh");
+    command
         .args(args)
         .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .output()
-        .map_err(FetchError::GhSpawn)?;
+        .env("GH_NO_UPDATE_NOTIFIER", "1");
+    let output = crate::process::run(&mut command, GH_TIMEOUT).map_err(Error::Gh)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let message = stderr.trim();
-        return Err(FetchError::GhFailed {
+        return Err(Error::GhFailed {
             command: label,
-            message: if message.is_empty() {
-                format!("exit status {}", output.status)
-            } else {
-                message.to_string()
-            },
+            message: output.failure_message(),
         });
     }
 
-    Ok(output.stdout)
+    Ok(output.stdout.into_bytes())
+}
+
+/// Run `gh` and parse its stdout as JSON.
+pub(crate) fn gh_json<T: DeserializeOwned>(label: &'static str, args: &[&str]) -> Result<T, Error> {
+    serde_json::from_slice(&gh(label, args)?).map_err(Error::GhJson)
 }
 
 pub(crate) fn author_login(user: Option<&User>) -> &str {
@@ -198,13 +211,9 @@ pub(crate) fn push_verbatim(out: &mut String, text: &str) {
 }
 
 /// Create `dir` if needed and write `markdown` to `<dir>/<file_name>`.
-pub(crate) fn write_markdown(
-    dir: &Path,
-    file_name: &str,
-    markdown: &str,
-) -> Result<(), FetchError> {
+pub(crate) fn write_markdown(dir: &Path, file_name: &str, markdown: &str) -> Result<(), Error> {
     if let Err(source) = fs::create_dir_all(dir) {
-        return Err(FetchError::CreateDir {
+        return Err(Error::CreateDir {
             path: dir.to_path_buf(),
             source,
         });
@@ -212,7 +221,7 @@ pub(crate) fn write_markdown(
 
     let path = dir.join(file_name);
     if let Err(source) = fs::write(&path, markdown) {
-        return Err(FetchError::Write { path, source });
+        return Err(Error::Write { path, source });
     }
 
     // Status output; a closed pipe must not turn a successful write into a panic.

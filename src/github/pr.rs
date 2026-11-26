@@ -1,8 +1,7 @@
 //! Fetch a GitHub pull request with its reviews and comments as Markdown.
 
 use crate::github::{
-    FetchError, GitHubUrl, Label, User, author_login, gh, label_names, push_verbatim,
-    write_markdown,
+    Error, GitHubUrl, Label, User, author_login, gh, label_names, push_verbatim, write_markdown,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -73,13 +72,13 @@ struct IssueComment {
 ///
 /// Returns an error if the URL is not a GitHub pull request, `gh` is missing or
 /// fails, its JSON cannot be parsed, or the output cannot be written.
-pub(crate) fn fetch_pr(url: &str, dir: &Path) -> Result<(), FetchError> {
+pub(crate) fn fetch_pr(url: &str, dir: &Path) -> Result<(), Error> {
     let pr_ref: GitHubUrl = url.parse()?;
     pr_ref.expect_pull()?;
 
     let pr_path = pr_ref.repo_path(&format!("pulls/{}", pr_ref.number));
     let bytes = gh("api", &["api", &pr_path])?;
-    let pr: PullRequest = serde_json::from_slice(&bytes).map_err(FetchError::GhJson)?;
+    let pr: PullRequest = serde_json::from_slice(&bytes).map_err(Error::GhJson)?;
 
     let reviews: Vec<Review> = fetch_pages(&pr_ref, &format!("pulls/{}/reviews", pr_ref.number))?;
     let review_comments: Vec<ReviewComment> =
@@ -91,13 +90,10 @@ pub(crate) fn fetch_pr(url: &str, dir: &Path) -> Result<(), FetchError> {
     write_markdown(dir, PR_FILE, &markdown)
 }
 
-fn fetch_pages<T: DeserializeOwned>(
-    pr_ref: &GitHubUrl,
-    endpoint: &str,
-) -> Result<Vec<T>, FetchError> {
+fn fetch_pages<T: DeserializeOwned>(pr_ref: &GitHubUrl, endpoint: &str) -> Result<Vec<T>, Error> {
     let path = pr_ref.repo_path(endpoint);
     let bytes = gh("api", &["api", "--paginate", "--slurp", &path])?;
-    let pages: Vec<Vec<T>> = serde_json::from_slice(&bytes).map_err(FetchError::GhJson)?;
+    let pages: Vec<Vec<T>> = serde_json::from_slice(&bytes).map_err(Error::GhJson)?;
     Ok(pages.into_iter().flatten().collect())
 }
 

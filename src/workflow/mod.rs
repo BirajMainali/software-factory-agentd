@@ -1,35 +1,16 @@
-//! Workflow events. Every stage runs in its own session under the main session.
-//! Not wired into the runtime yet.
-#![allow(dead_code)]
+//! Task workflow: the pure state machine, the event log it is replayed from, and
+//! the worker that drives one task.
 
+mod event;
+mod log;
 mod machine;
+mod report;
+mod stage;
+mod state;
+mod watcher;
+mod worker;
 
-pub(crate) struct Event {
-    pub(crate) session_id: String,
-    pub(crate) parent_session_id: String,
-    pub(crate) stage: Stage,
-}
-
-pub(crate) enum Stage {
-    Planning(Phase),
-    Development(Phase),
-    Review(Review),
-}
-
-pub(crate) enum Review {
-    Security(Phase),
-    Code(CodeReview),
-    UiUx(CodeReview),
-}
-
-pub(crate) enum Phase {
-    Started,
-    Completed,
-}
-
-pub(crate) enum CodeReview {
-    Started,
-    Completed,
-    ChangeRequested(String),
-    NeedMoreEvidence(String),
-}
+pub(crate) use event::Event;
+pub(crate) use log::{Error as LogError, Log, now, read as read_log};
+pub(crate) use state::{Attention, TaskState};
+pub(crate) use worker::Worker;

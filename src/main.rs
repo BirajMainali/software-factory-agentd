@@ -1,11 +1,18 @@
+mod dashboard;
 mod github;
+mod home;
 mod opencode;
+mod process;
+mod project;
+mod runtime;
 mod workflow;
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
+
+const DEFAULT_DASHBOARD_ADDR: &str = "127.0.0.1:7878";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,6 +37,22 @@ fn run(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         [command, rest @ ..] if command == "spawn" => cmd_spawn(rest),
+        [command, url] if command == "work" => {
+            workflow::Worker::run(url)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        [command, repos @ ..] if command == "run" => {
+            runtime::run(repos)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        [command] if command == "dashboard" => {
+            dashboard::serve(DEFAULT_DASHBOARD_ADDR)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        [command, addr] if command == "dashboard" => {
+            dashboard::serve(addr)?;
+            Ok(ExitCode::SUCCESS)
+        }
         [command, ..] if matches!(command.as_str(), "help" | "--help" | "-h") => {
             usage();
             Ok(ExitCode::SUCCESS)
@@ -45,12 +68,31 @@ fn cmd_spawn(args: &[String]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut flags = parse_flags(args)?;
     let prompt = take(&mut flags, "prompt")?;
     let session = take_optional(&mut flags, "session");
+    let agent = take_optional(&mut flags, "agent");
     let title = take_optional(&mut flags, "title");
     ensure_no_unknown(&flags)?;
 
-    let opencode = opencode::OpenCode;
-    let session = opencode.spawn(session.as_deref(), &prompt, title.as_deref())?;
-    let _ = writeln!(std::io::stdout(), "session {session}");
+    let client = opencode::Client::connect()?;
+    let session = match session {
+        Some(session) => session,
+        None => {
+            let directory = std::env::current_dir()?;
+            client.create_session(&opencode::NewSession {
+                title: title.as_deref().unwrap_or("spawn"),
+                directory: Some(&directory),
+                parent: None,
+                agent: agent.as_deref(),
+            })?
+        }
+    };
+    let after = client.last_run(&session)?;
+    client.prompt(&session, &prompt)?;
+    let outcome = client.wait_for_run(&session, after.as_deref())?;
+    let _ = writeln!(
+        std::io::stdout(),
+        "{}",
+        serde_json::json!({ "session": session, "outcome": outcome })
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -114,6 +156,12 @@ fn usage() {
     );
     let _ = writeln!(
         out,
-        "  software-factory-runtime spawn --prompt <text> [--session <id>] [--title <text>]"
+        "  software-factory-runtime spawn --prompt <text> [--session <id>] [--agent <id>] [--title <text>]"
+    );
+    let _ = writeln!(out, "  software-factory-runtime work <issue-url>");
+    let _ = writeln!(out, "  software-factory-runtime run <owner/repo>...");
+    let _ = writeln!(
+        out,
+        "  software-factory-runtime dashboard [<addr>]   (default {DEFAULT_DASHBOARD_ADDR})"
     );
 }
