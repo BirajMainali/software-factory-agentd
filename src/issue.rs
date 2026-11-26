@@ -1,130 +1,102 @@
-use serde_json::Value;
-use std::fs;
+//! Fetch a GitHub issue and render it as Markdown.
+
+use crate::github::{
+    FetchError, GitHubUrl, Label, User, author_login, gh, label_names, push_verbatim,
+    write_markdown,
+};
+use serde::Deserialize;
+use std::fmt::Write as _;
 use std::path::Path;
-use std::process::Command;
 
-pub fn fetch_issue(url: &str, dir: &Path) -> Result<(), String> {
-    let (owner, repo, number) = parse_issue_url(url)?;
-    let target = format!("https://github.com/{owner}/{repo}/issues/{number}");
+const ISSUE_JSON_FIELDS: &str = "title,body,author,state,labels,createdAt,updatedAt,url,comments";
+const ISSUE_FILE: &str = "issue.md";
 
-    let output = Command::new("gh")
-        .args([
-            "issue",
-            "view",
-            &target,
-            "--json",
-            "number,title,body,author,state,labels,createdAt,updatedAt,url,comments",
-        ])
-        .output()
-        .map_err(|e| format!("failed to run gh (is GitHub CLI installed?): {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh issue view failed: {}", stderr.trim()));
-    }
-
-    let issue: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("gh returned invalid JSON: {e}"))?;
-
-    if is_pull_request(&issue) {
-        return Err(format!("{url} is a pull request, not an issue"));
-    }
-
-    fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let path = dir.join("issue.md");
-    fs::write(&path, render_issue(&issue))
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-
-    println!("wrote {}", path.display());
-    Ok(())
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Issue {
+    title: String,
+    body: Option<String>,
+    url: String,
+    author: Option<User>,
+    state: String,
+    #[serde(default)]
+    labels: Vec<Label>,
+    created_at: String,
+    updated_at: String,
+    #[serde(default)]
+    comments: Vec<Comment>,
 }
 
-fn parse_issue_url(url: &str) -> Result<(String, String, u64), String> {
-    let rest = url
-        .strip_prefix("https://github.com/")
-        .ok_or("expected a full URL like https://github.com/owner/repo/issues/123")?;
-    let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
-    if parts.len() != 4 || parts[2] != "issues" {
-        return Err("expected a full URL like https://github.com/owner/repo/issues/123".into());
-    }
-
-    let (owner, repo, number) = (parts[0], parts[1], parts[3]);
-    for part in [owner, repo] {
-        let valid = !part.is_empty()
-            && part
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-        if !valid {
-            return Err(format!("invalid GitHub owner or repository: {part}"));
-        }
-    }
-
-    let number: u64 = number
-        .parse()
-        .map_err(|_| format!("invalid issue number: {number}"))?;
-    if number == 0 {
-        return Err("issue number must be greater than zero".into());
-    }
-
-    Ok((owner.into(), repo.into(), number))
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Comment {
+    author: Option<User>,
+    body: Option<String>,
+    created_at: String,
 }
 
-fn render_issue(issue: &Value) -> String {
-    let mut out = format!("# {}\n\n", text(issue, "title"));
-    out.push_str(&format!("- URL: {}\n", text(issue, "url")));
-    out.push_str(&format!("- Author: @{}\n", author_login(&issue["author"])));
-    out.push_str(&format!("- State: {}\n", text(issue, "state")));
+/// Fetch `url` with `gh` and write `<dir>/issue.md`.
+///
+/// # Errors
+///
+/// Returns an error if the URL is not a GitHub issue, `gh` is missing or fails,
+/// its JSON cannot be parsed, or the output cannot be written.
+pub(crate) fn fetch_issue(url: &str, dir: &Path) -> Result<(), FetchError> {
+    let issue_ref: GitHubUrl = url.parse()?;
+    issue_ref.expect_issue()?;
+    let issue_url = issue_ref.to_string();
 
-    let labels = labels(issue);
-    if !labels.is_empty() {
-        out.push_str(&format!("- Labels: {labels}\n"));
+    let bytes = gh(
+        "issue view",
+        &["issue", "view", &issue_url, "--json", ISSUE_JSON_FIELDS],
+    )?;
+    let issue: Issue = serde_json::from_slice(&bytes).map_err(FetchError::GhJson)?;
+
+    // GitHub shares numbering between issues and pull requests, so an
+    // /issues/<n> URL can resolve to a pull request.
+    if is_pull_request(&issue.url) {
+        return Err(FetchError::NotAnIssue(issue.url));
     }
 
-    out.push_str(&format!("- Created: {}\n", text(issue, "createdAt")));
-    out.push_str(&format!("- Updated: {}\n", text(issue, "updatedAt")));
-    out.push_str("\n## Body\n\n");
-    out.push_str(text(issue, "body").trim_end());
+    write_markdown(dir, ISSUE_FILE, &render_issue(&issue))
+}
+
+fn is_pull_request(url: &str) -> bool {
+    url.split('/').nth(5) == Some("pull")
+}
+
+fn render_issue(issue: &Issue) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# {}", issue.title);
     out.push('\n');
+    let _ = writeln!(out, "- URL: {}", issue.url);
+    let _ = writeln!(out, "- Author: @{}", author_login(issue.author.as_ref()));
+    let _ = writeln!(out, "- State: {}", issue.state);
 
-    if let Some(comments) = issue["comments"].as_array().filter(|c| !c.is_empty()) {
+    let labels = label_names(&issue.labels);
+    if !labels.is_empty() {
+        let _ = writeln!(out, "- Labels: {labels}");
+    }
+
+    let _ = writeln!(out, "- Created: {}", issue.created_at);
+    let _ = writeln!(out, "- Updated: {}", issue.updated_at);
+    out.push_str("\n## Body\n\n");
+    push_verbatim(&mut out, issue.body.as_deref().unwrap_or(""));
+
+    if !issue.comments.is_empty() {
         out.push_str("\n## Comments\n");
-        for comment in comments {
-            out.push_str(&format!(
+        for comment in &issue.comments {
+            let _ = write!(
+                out,
                 "\n### @{} - {}\n\n",
-                author_login(&comment["author"]),
-                text(comment, "createdAt")
-            ));
-            out.push_str(text(comment, "body").trim_end());
-            out.push('\n');
+                author_login(comment.author.as_ref()),
+                comment.created_at
+            );
+            push_verbatim(&mut out, comment.body.as_deref().unwrap_or(""));
         }
     }
 
     out
-}
-
-fn is_pull_request(issue: &Value) -> bool {
-    issue["url"].as_str().and_then(|url| url.split('/').nth(5)) == Some("pull")
-}
-
-fn text<'a>(value: &'a Value, key: &str) -> &'a str {
-    value[key].as_str().unwrap_or("")
-}
-
-fn author_login(author: &Value) -> &str {
-    author["login"].as_str().unwrap_or("ghost")
-}
-
-fn labels(issue: &Value) -> String {
-    issue["labels"]
-        .as_array()
-        .map(|labels| {
-            labels
-                .iter()
-                .filter_map(|label| label["name"].as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -133,40 +105,17 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn parses_full_issue_url() {
-        assert_eq!(
-            parse_issue_url("https://github.com/acme/widgets/issues/42").unwrap(),
-            ("acme".into(), "widgets".into(), 42)
-        );
-        assert_eq!(
-            parse_issue_url("https://github.com/acme/widgets/issues/42/")
-                .unwrap()
-                .2,
-            42
-        );
-    }
-
-    #[test]
-    fn rejects_pull_requests_and_bad_urls() {
-        assert!(parse_issue_url("https://github.com/acme/widgets/pull/42").is_err());
-        assert!(parse_issue_url("acme/widgets#42").is_err());
-        assert!(parse_issue_url("https://github.com/acme/widgets/issues/nope").is_err());
-        assert!(parse_issue_url("https://github.com/acme/widgets/issues/0").is_err());
-    }
-
-    #[test]
     fn detects_pull_request_urls() {
-        assert!(is_pull_request(&json!({
-            "url": "https://github.com/acme/widgets/pull/42"
-        })));
-        assert!(!is_pull_request(&json!({
-            "url": "https://github.com/acme/widgets/issues/42"
-        })));
+        assert!(is_pull_request("https://github.com/acme/widgets/pull/42"));
+        assert!(!is_pull_request(
+            "https://github.com/acme/widgets/issues/42"
+        ));
+        assert!(!is_pull_request("not a url"));
     }
 
     #[test]
     fn renders_issue_and_comments() {
-        let issue = json!({
+        let issue: Issue = serde_json::from_value(json!({
             "title": "Crash on start",
             "body": "Steps:\n1. run it",
             "url": "https://github.com/acme/widgets/issues/42",
@@ -180,14 +129,49 @@ mod tests {
                 "body": "Same here",
                 "createdAt": "2026-01-03T00:00:00Z"
             }]
-        });
+        }))
+        .unwrap();
+
+        let expected = concat!(
+            "# Crash on start\n",
+            "\n",
+            "- URL: https://github.com/acme/widgets/issues/42\n",
+            "- Author: @alice\n",
+            "- State: OPEN\n",
+            "- Labels: bug, runtime\n",
+            "- Created: 2026-01-01T00:00:00Z\n",
+            "- Updated: 2026-01-02T00:00:00Z\n",
+            "\n",
+            "## Body\n",
+            "\n",
+            "Steps:\n",
+            "1. run it\n",
+            "\n",
+            "## Comments\n",
+            "\n",
+            "### @bob - 2026-01-03T00:00:00Z\n",
+            "\n",
+            "Same here\n",
+        );
+
+        assert_eq!(render_issue(&issue), expected);
+    }
+
+    #[test]
+    fn renders_issue_without_optional_fields() {
+        let issue: Issue = serde_json::from_value(json!({
+            "title": "Empty",
+            "url": "https://github.com/acme/widgets/issues/1",
+            "state": "CLOSED",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
 
         let md = render_issue(&issue);
-        assert!(md.starts_with("# Crash on start\n"));
-        assert!(md.contains("- Labels: bug, runtime"));
-        assert!(md.contains("Steps:\n1. run it"));
-        assert!(md.contains("### @bob - 2026-01-03T00:00:00Z"));
-        assert!(md.contains("Same here"));
-        assert!(md.ends_with('\n'));
+        assert!(md.contains("- Author: @ghost"));
+        assert!(!md.contains("- Labels:"));
+        assert!(!md.contains("## Comments"));
+        assert!(md.contains("## Body\n\n\n"));
     }
 }

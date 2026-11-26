@@ -52,6 +52,7 @@ and split into a workspace only when a second binary or crate appears. No CI yet
 
 ```sh
 cargo run -- fetch-issue <issue-url> <output-dir>   # writes <output-dir>/issue.md
+cargo run -- fetch-pr <pr-url> <output-dir>         # writes <output-dir>/pr.md
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
