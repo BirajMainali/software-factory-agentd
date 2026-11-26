@@ -38,6 +38,7 @@ and split into a workspace only when a second binary or crate appears. No CI yet
 
 ## Working rules
 
+- Never commit or push unless the user explicitly asks.
 - Smallest change that fully solves the task; no speculative modules, options, or config.
 - Runtime paths must not panic: return typed errors, record worker failures with a reason,
   and keep the supervisor alive.
