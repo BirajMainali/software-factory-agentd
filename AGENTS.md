@@ -58,4 +58,15 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+Agents run through the `opencode` CLI, which must be installed:
+
+```sh
+cargo run -- spawn --prompt "..." [--title "main"]        # new main session, prints its id
+cargo run -- spawn --session <main-id> --prompt "..."     # continue that session
+```
+
+`spawn` runs `opencode run --format json ...`, prints the session id, and returns
+when that turn finishes. Delegating to subagents (e.g. "start the coder subagent and
+give it this task: ...") is just a prompt to the main session.
+
 Single test: `cargo test <name>`.
