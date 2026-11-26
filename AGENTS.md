@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Software Factory Runtime: a Rust, event-driven router for autonomous AI software
+agentd: a Rust, event-driven router for autonomous AI software
 workflows across multiple projects and repositories. It spawns agents and routes work
 between them by fixed rules. What agents do, and how, is theirs.
 

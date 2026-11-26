@@ -14,12 +14,12 @@ use std::process::ExitCode;
 
 const DEFAULT_DASHBOARD_ADDR: &str = "127.0.0.1:7878";
 const USAGE: &str = "usage:
-  software-factory-runtime fetch-issue <issue-url> <output-dir>
-  software-factory-runtime fetch-pr <pr-url> <output-dir>
-  software-factory-runtime spawn --prompt <text> [--session <id>] [--agent <id>] [--title <text>]
-  software-factory-runtime work <issue-url>
-  software-factory-runtime run <owner/repo>...
-  software-factory-runtime dashboard [<addr>]   (default 127.0.0.1:7878)";
+  agentd fetch-issue <issue-url> <output-dir>
+  agentd fetch-pr <pr-url> <output-dir>
+  agentd spawn --prompt <text> [--session <id>] [--agent <id>] [--title <text>]
+  agentd work <issue-url>
+  agentd run <owner/repo>...
+  agentd dashboard [<addr>]   (default 127.0.0.1:7878)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
