@@ -64,7 +64,6 @@ cargo run -- fetch-issue <issue-url> <output-dir>   # writes <output-dir>/issue.
 cargo run -- fetch-pr <pr-url> <output-dir>         # writes <output-dir>/pr.md
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
 ```
 
 Agents run through the `opencode` CLI, which must be installed:
@@ -77,5 +76,3 @@ cargo run -- spawn --session <main-id> --prompt "..."     # continue that sessio
 `spawn` runs `opencode run --format json ...`, prints the session id, and returns
 when that turn finishes. Delegating to subagents (e.g. "start the coder subagent and
 give it this task: ...") is just a prompt to the main session.
-
-Single test: `cargo test <name>`.

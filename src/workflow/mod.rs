@@ -2,6 +2,8 @@
 //! Not wired into the runtime yet.
 #![allow(dead_code)]
 
+mod machine;
+
 pub(crate) struct Event {
     pub(crate) session_id: String,
     pub(crate) parent_session_id: String,
