@@ -2,7 +2,6 @@
 
 pub(crate) mod issue;
 pub(crate) mod pr;
-pub(crate) mod pulls;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;

@@ -1,39 +1,31 @@
 //! What happened to a task. The log of these is the durable record; all task state
 //! is derived by replaying it.
 
-use super::machine::{Role, Signal};
-use super::stage::Stage;
-use super::watcher::Cursor;
-use crate::github::pulls::PullRequest;
+use super::sequence::Role;
 use crate::opencode::Outcome;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum Event {
     WorkerStarted,
-    WorktreeReady {
-        path: PathBuf,
-        branch: String,
-    },
-    /// The task's main opencode session, recorded as soon as its id is known.
+    /// The task's main opencode session.
     SessionOpened {
         session: String,
     },
-    /// Recorded before prompting `session` for `role`: the commit the turn starts
-    /// from, and the session's last finished run before it (`after`).
-    TurnStarted {
-        role: Role,
-        head: String,
-        session: String,
-        after: Option<String>,
-    },
-    /// The runtime created `role`'s sub-agent session under the main session.
+    /// The router created `role`'s sub-agent session under the main session.
     SubagentStarted {
         role: Role,
         session: String,
         parent: String,
+    },
+    /// Recorded before prompting `session` for sequence step `step`, with the
+    /// session's last finished run before it (`after`).
+    TurnStarted {
+        step: usize,
+        role: Role,
+        session: String,
+        after: Option<String>,
     },
     /// opencode reported the sub-agent's run ended.
     SubagentFinished {
@@ -41,32 +33,10 @@ pub(crate) enum Event {
         session: String,
         outcome: Outcome,
     },
-    StageReported {
-        role: Role,
-        session: String,
-        head: String,
-        stage: Stage,
+    /// Sequence step `step` is done; the next one runs.
+    StepCompleted {
+        step: usize,
     },
-    /// The developer's answer to a human question, not yet on the pull request.
-    AnswerWritten {
-        text: String,
-    },
-    AnswerPosted,
-    Pushed {
-        head: String,
-    },
-    PullRequestOpened {
-        pull_request: PullRequest,
-    },
-    /// Started watching the pull request; only signals after `cursor` count.
-    Watching {
-        cursor: Cursor,
-    },
-    SignalReceived {
-        signal: Signal,
-        cursor: Cursor,
-    },
-    Merged,
     WorkerFailed {
         reason: String,
     },

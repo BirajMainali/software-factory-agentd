@@ -2,10 +2,7 @@
 //! events through [`TaskState::apply`], so a restart rebuilds exactly this state.
 
 use super::event::{Event, Record};
-use super::machine::{Action, Role, Workflow};
-use super::stage::ReviewKind;
-use super::watcher::Cursor;
-use crate::github::pulls::PullRequest;
+use super::sequence::{Role, SEQUENCE, Task};
 use crate::opencode::Outcome;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -15,12 +12,10 @@ const MAX_FAILURES: u32 = 3;
 /// Seconds before the first retry; doubles with each further failure.
 const RETRY_BACKOFF_SECS: u64 = 60;
 
-/// A turn the worker prompted and has not finished recording.
+/// A turn the worker prompted and has not completed: running, or cut off by a crash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OpenTurn {
-    pub(crate) role: Role,
-    /// Commit when the turn started; reviewers must leave it unchanged.
-    pub(crate) head: String,
+    pub(crate) step: usize,
     pub(crate) session: String,
     /// The session's last finished run before this turn's prompt.
     pub(crate) after: Option<String>,
@@ -37,29 +32,21 @@ pub(crate) enum Attention {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TaskState {
-    pub(crate) workflow: Workflow,
+    /// Index into [`SEQUENCE`] of the next step to run.
+    pub(crate) next_step: usize,
     /// The task's main opencode session.
     pub(crate) main_session: Option<String>,
-    /// Latest sub-agent child session per role; resumed for follow-ups.
+    /// Latest sub-agent session per role; continued by steps that resume a role.
     pub(crate) children: BTreeMap<Role, String>,
-    /// A prompted turn without a stage report yet: running, or cut off by a crash.
     pub(crate) turn: Option<OpenTurn>,
-    /// Sub-agent created for the current start action, not yet reported on.
+    /// Sub-agent created for the next step but not yet prompted.
     pub(crate) pending_child: Option<(Role, String)>,
-    pub(crate) branch: Option<String>,
-    pub(crate) pull_request: Option<PullRequest>,
-    pub(crate) pushed: Option<String>,
-    /// Set while watching the pull request for the current review round.
-    pub(crate) watching: Option<Cursor>,
-    pub(crate) cursor: Cursor,
-    pub(crate) pending_answer: Option<String>,
-    pub(crate) merged: bool,
     /// Failed worker exits since the last progress.
     pub(crate) failures: u32,
     pub(crate) last_failure_at: u64,
     pub(crate) last_failure: Option<String>,
-    /// When the current action (or the merge) began.
-    pub(crate) action_since: u64,
+    /// When the current step began.
+    pub(crate) step_since: u64,
     pub(crate) updated: u64,
 }
 
@@ -73,28 +60,26 @@ impl TaskState {
     }
 
     pub(crate) fn apply(&mut self, record: &Record) {
-        let before = self.workflow.next().clone();
-        self.apply_event(record);
-        self.updated = record.ts;
-        if self.action_since == 0 || *self.workflow.next() != before {
-            self.action_since = record.ts;
+        if self.step_since == 0 {
+            self.step_since = record.ts;
         }
-    }
-
-    fn apply_event(&mut self, record: &Record) {
+        self.updated = record.ts;
         match &record.event {
             Event::WorkerStarted => {}
-            Event::WorktreeReady { branch, .. } => self.branch = Some(branch.clone()),
             Event::SessionOpened { session } => self.main_session = Some(session.clone()),
+            Event::SubagentStarted { role, session, .. } => {
+                self.children.insert(*role, session.clone());
+                self.pending_child = Some((*role, session.clone()));
+            }
             Event::TurnStarted {
-                role,
-                head,
+                step,
                 session,
                 after,
+                ..
             } => {
+                self.pending_child = None;
                 self.turn = Some(OpenTurn {
-                    role: *role,
-                    head: head.clone(),
+                    step: *step,
                     session: session.clone(),
                     after: after.clone(),
                 });
@@ -104,45 +89,12 @@ impl TaskState {
                     self.turn = None;
                 }
             }
-            Event::SubagentStarted { role, session, .. } => {
-                self.children.insert(*role, session.clone());
-                self.pending_child = Some((*role, session.clone()));
-            }
-            Event::StageReported { head, stage, .. } => {
+            Event::StepCompleted { step } => {
                 self.turn = None;
-                self.pending_child = None;
-                self.workflow.advance(stage.clone(), head);
-                self.progressed();
-            }
-            Event::AnswerWritten { text } => self.pending_answer = Some(text.clone()),
-            Event::AnswerPosted => {
-                self.pending_answer = None;
-                self.progressed();
-            }
-            Event::Pushed { head } => {
-                self.pushed = Some(head.clone());
-                self.progressed();
-            }
-            Event::PullRequestOpened { pull_request } => {
-                self.pull_request = Some(pull_request.clone());
-                self.progressed();
-            }
-            Event::Watching { cursor } => {
-                self.cursor = *cursor;
-                self.watching = Some(*cursor);
-            }
-            Event::SignalReceived { signal, cursor } => {
-                self.cursor = *cursor;
-                self.watching = Some(*cursor);
-                if self.workflow.signal(signal.clone()).is_some() {
-                    self.watching = None;
-                }
-                self.progressed();
-            }
-            Event::Merged => {
-                self.merged = true;
-                self.action_since = record.ts;
-                self.progressed();
+                self.next_step = step + 1;
+                self.step_since = record.ts;
+                self.failures = 0;
+                self.last_failure = None;
             }
             Event::WorkerFailed { reason } => self.last_failure = Some(reason.clone()),
             Event::WorkerExited { code } => {
@@ -154,9 +106,19 @@ impl TaskState {
         }
     }
 
+    /// The next task to run; `None` once the whole sequence ran.
+    pub(crate) fn next(&self) -> Option<Task> {
+        SEQUENCE.get(self.next_step).copied()
+    }
+
+    /// The sequence ran to the end; the task waits for a human.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.next().is_none()
+    }
+
     /// Out of retries: the runtime no longer schedules it.
     pub(crate) fn is_stuck(&self) -> bool {
-        !self.merged && self.failures >= MAX_FAILURES
+        !self.is_finished() && self.failures >= MAX_FAILURES
     }
 
     /// Earliest time the runtime retries after a failure; `None` without failures.
@@ -172,40 +134,25 @@ impl TaskState {
     }
 
     pub(crate) fn attention(&self, now: u64) -> Option<Attention> {
-        if self.merged {
-            None
+        if self.is_finished() {
+            Some(Attention::AwaitingHuman)
         } else if self.is_stuck() {
             Some(Attention::Stuck)
         } else if self.retry_at().is_some_and(|at| now < at) {
             Some(Attention::BackingOff)
-        } else if *self.workflow.next() == Action::AwaitHumanReview {
-            Some(Attention::AwaitingHuman)
         } else {
             None
         }
     }
 
-    /// Short machine-readable status for the dashboard.
-    pub(crate) fn status(&self) -> &'static str {
-        if self.merged {
-            return "merged";
-        }
-        match self.workflow.next() {
-            Action::Start(role) | Action::Resume(role, _) => match role {
-                Role::SolutionArchitect => "planning",
-                Role::Developer => "developing",
-                Role::Reviewer(ReviewKind::Security) => "security_review",
-                Role::Reviewer(ReviewKind::Code) => "code_review",
-                Role::Reviewer(ReviewKind::UiUx) => "uiux_review",
-            },
-            Action::Answer(_) => "answering_question",
-            Action::AwaitHumanReview => "awaiting_human_review",
-            Action::Merge => "merging",
-        }
+    /// Agent working on the current step right now, if a turn is in flight.
+    pub(crate) fn working_agent(&self) -> Option<&'static str> {
+        let turn = self.turn.as_ref()?;
+        SEQUENCE.get(turn.step).map(|task| task.role().agent())
     }
 
-    fn progressed(&mut self) {
-        self.failures = 0;
-        self.last_failure = None;
+    /// Short machine-readable status for the dashboard.
+    pub(crate) fn status(&self) -> &'static str {
+        self.next().map_or("awaiting_human", Task::status)
     }
 }

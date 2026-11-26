@@ -1,13 +1,10 @@
-//! Task workflow: the pure state machine, the event log it is replayed from, and
-//! the worker that drives one task.
+//! Task workflow: the fixed step sequence, the event log it is replayed from, and
+//! the worker that routes one task through it.
 
 mod event;
 mod log;
-mod machine;
-mod report;
-mod stage;
+mod sequence;
 mod state;
-mod watcher;
 mod worker;
 
 pub(crate) use event::Event;

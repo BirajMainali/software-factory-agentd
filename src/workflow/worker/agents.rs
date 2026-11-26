@@ -1,33 +1,68 @@
-//! Sub-agent turns. The runtime creates each role's sub-agent session under the
-//! task's main session, prompts it, and learns from opencode when the run ended.
+//! Running one sequence step: create or continue the step's sub-agent session under
+//! the task's main session, prompt it, and learn from opencode when the run ended.
 
 use super::{Error, Worker, prompts};
 use crate::opencode::{NewSession, Outcome};
 use crate::workflow::event::Event;
-use crate::workflow::machine::{Action, Role};
-use crate::workflow::report::{self, REPORT_FILE};
+use crate::workflow::sequence::{Role, Task};
 
 impl Worker<'_> {
-    /// Create a new sub-agent session for `role` under the main session and run its
-    /// first turn. After a crash, the sub-agent already created is reused.
-    pub(super) fn start_subagent(&mut self, role: Role) -> Result<(), Error> {
-        let child = match self.state.pending_child.clone() {
-            Some((pending, child)) if pending == role => child,
-            _ => self.create_subagent(role)?,
+    /// Run sequence step `index` to completion. A step cut off by a crash is picked
+    /// up again: its run finished, still running, or never sent.
+    pub(super) fn run_step(&mut self, index: usize, task: Task) -> Result<(), Error> {
+        let role = task.role();
+        let prompt = prompts::for_task(task, &self.issue, &self.factory_dir);
+        let open = self.state.turn.clone().filter(|turn| turn.step == index);
+        let (session, after) = match open {
+            Some(turn) => {
+                let finished = self.opencode.last_run(&turn.session)? != turn.after;
+                if !finished && !self.opencode.is_running(&turn.session)? {
+                    self.prompt_subagent(&turn.session, &prompt)?;
+                }
+                (turn.session, turn.after)
+            }
+            None => {
+                let session = self.session_for(task)?;
+                let after = self.opencode.last_run(&session)?;
+                self.record(Event::TurnStarted {
+                    step: index,
+                    role,
+                    session: session.clone(),
+                    after: after.clone(),
+                })?;
+                self.prompt_subagent(&session, &prompt)?;
+                (session, after)
+            }
         };
-        let prompt = prompts::start(&self.issue, role);
-        self.run_turn(role, &child, &prompt)
+
+        let outcome = self.opencode.wait_for_run(&session, after.as_deref())?;
+        self.quiet_main()?;
+        self.record(Event::SubagentFinished {
+            role,
+            session,
+            outcome,
+        })?;
+        match outcome {
+            Outcome::Succeeded => self.record(Event::StepCompleted { step: index }),
+            Outcome::Failed | Outcome::Interrupted => Err(Error::SubagentEnded { role, outcome }),
+        }
     }
 
-    /// Continue `role`'s existing sub-agent session with a follow-up.
-    pub(super) fn resume_subagent(&mut self, role: Role, prompt: &str) -> Result<(), Error> {
-        let child = self
-            .state
-            .children
-            .get(&role)
-            .cloned()
-            .ok_or(Error::NoSession(role))?;
-        self.run_turn(role, &child, prompt)
+    /// The session a step runs in: a new sub-agent, or the role's existing one.
+    fn session_for(&mut self, task: Task) -> Result<String, Error> {
+        let role = task.role();
+        if !task.starts_session() {
+            return self
+                .state
+                .children
+                .get(&role)
+                .cloned()
+                .ok_or(Error::NoSession(role));
+        }
+        match self.state.pending_child.clone() {
+            Some((pending, session)) if pending == role => Ok(session),
+            _ => self.create_subagent(role),
+        }
     }
 
     fn create_subagent(&mut self, role: Role) -> Result<String, Error> {
@@ -59,7 +94,7 @@ impl Worker<'_> {
         );
         let main = self.opencode.create_session(&NewSession {
             title: &title,
-            directory: Some(&self.worktree.path),
+            directory: Some(&self.workspace),
             parent: None,
             agent: None,
         })?;
@@ -69,52 +104,8 @@ impl Worker<'_> {
         Ok(main)
     }
 
-    /// Prompt `child` and wait for opencode to report the run ended. A turn cut
-    /// off by a crash is picked up again: finished, still running, or never sent.
-    fn run_turn(&mut self, role: Role, child: &str, prompt: &str) -> Result<(), Error> {
-        let report_path = self.worktree.factory_file(REPORT_FILE);
-        let open = self
-            .state
-            .turn
-            .clone()
-            .filter(|turn| turn.role == role && turn.session == child);
-        let after = match open {
-            Some(turn) => {
-                let finished = self.opencode.last_run(child)? != turn.after;
-                if !finished && !self.opencode.is_running(child)? {
-                    self.prompt_subagent(child, prompt)?;
-                }
-                turn.after
-            }
-            None => {
-                report::clear(&report_path)?;
-                let after = self.opencode.last_run(child)?;
-                self.record(Event::TurnStarted {
-                    role,
-                    head: self.worktree.head()?,
-                    session: child.to_string(),
-                    after: after.clone(),
-                })?;
-                self.prompt_subagent(child, prompt)?;
-                after
-            }
-        };
-
-        let outcome = self.opencode.wait_for_run(child, after.as_deref())?;
-        self.quiet_main()?;
-        self.record(Event::SubagentFinished {
-            role,
-            session: child.to_string(),
-            outcome,
-        })?;
-        match outcome {
-            Outcome::Succeeded => self.finish_turn(role, child.to_string()),
-            Outcome::Failed | Outcome::Interrupted => Err(Error::SubagentEnded { role, outcome }),
-        }
-    }
-
     fn prompt_subagent(&mut self, child: &str, prompt: &str) -> Result<(), Error> {
-        // Main must be idle before a sub-agent works in the shared worktree.
+        // Main must be idle while a sub-agent works.
         self.quiet_main()?;
         self.opencode.prompt(child, prompt)?;
         Ok(())
@@ -126,49 +117,6 @@ impl Worker<'_> {
         if let Some(main) = &self.state.main_session {
             self.opencode.interrupt(main)?;
         }
-        Ok(())
-    }
-
-    /// Check what the sub-agent did and record the verdict it reported.
-    fn finish_turn(&mut self, role: Role, session: String) -> Result<(), Error> {
-        let report = report::read(&self.worktree.factory_file(REPORT_FILE))?;
-        let before = self.state.turn.as_ref().map(|turn| turn.head.clone());
-        match role {
-            Role::SolutionArchitect => {}
-            Role::Developer => self
-                .worktree
-                .commit_all(&format!("factory: work on #{}", self.issue.number))?,
-            Role::Reviewer(_) => {
-                let head = self.worktree.head()?;
-                if before.as_deref() != Some(head.as_str()) || !self.worktree.is_clean()? {
-                    return Err(Error::ReviewerChangedCode(role));
-                }
-            }
-        }
-
-        let head = self.worktree.head()?;
-        let stage = report.stage;
-        let answering = matches!(self.state.workflow.next(), Action::Answer(_));
-        if self
-            .state
-            .workflow
-            .clone()
-            .advance(stage.clone(), &head)
-            .is_none()
-        {
-            return Err(Error::StaleStage(role));
-        }
-        if answering {
-            let text = report.text.ok_or(Error::NoAnswer)?;
-            self.record(Event::AnswerWritten { text })?;
-        }
-        self.record(Event::StageReported {
-            role,
-            session,
-            head,
-            stage,
-        })?;
-        report::clear(&self.worktree.factory_file(REPORT_FILE))?;
         Ok(())
     }
 }

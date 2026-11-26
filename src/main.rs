@@ -3,7 +3,6 @@ mod github;
 mod home;
 mod opencode;
 mod process;
-mod project;
 mod runtime;
 mod workflow;
 

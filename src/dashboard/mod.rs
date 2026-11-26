@@ -44,7 +44,6 @@ struct TaskView {
     attention: Option<Attention>,
     /// Agent whose sub-agent session is working right now.
     working: Option<&'static str>,
-    pull_request: Option<String>,
     last_failure: Option<String>,
     retry_at: Option<u64>,
     since: u64,
@@ -164,7 +163,6 @@ fn view(home: &Path, issue: &GitHubUrl, now: u64) -> TaskView {
         status: "unreadable_log",
         attention: None,
         working: None,
-        pull_request: None,
         last_failure: None,
         retry_at: None,
         since: 0,
@@ -176,11 +174,10 @@ fn view(home: &Path, issue: &GitHubUrl, now: u64) -> TaskView {
     let state = TaskState::replay(&records);
     view.status = state.status();
     view.attention = state.attention(now);
-    view.working = state.turn.as_ref().map(|turn| turn.role.agent());
+    view.working = state.working_agent();
     view.retry_at = state.retry_at();
-    view.pull_request = state.pull_request.map(|pull| pull.url);
     view.last_failure = state.last_failure.as_deref().map(summary);
-    view.since = state.action_since;
+    view.since = state.step_since;
     view.updated = state.updated;
     view
 }

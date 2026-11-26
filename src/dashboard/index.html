@@ -41,7 +41,6 @@
   .bad { color: var(--bad); }
   .warn { color: var(--warn); }
   .you { color: var(--accent); font-weight: 600; }
-  .good { color: var(--good); }
 
   #empty { color: var(--muted); }
 </style>
@@ -54,21 +53,23 @@
 
 <table>
   <thead>
-    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>For</th><th>PR</th></tr>
+    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>For</th></tr>
   </thead>
   <tbody id="tasks"></tbody>
 </table>
 <p id="empty" hidden>No tasks yet.</p>
 
 <script>
-  const STEPS = ["plan", "dev", "security", "code", "ui/ux", "human", "merged"];
+  const STEPS = ["plan", "dev", "security", "code", "ui/ux", "human"];
   const STEP_OF = {
-    planning: 0, developing: 1, security_review: 2, code_review: 3, uiux_review: 4,
-    awaiting_human_review: 5, answering_question: 5, merging: 6, merged: 7,
+    planning: 0, developing: 1,
+    security_review: 2, applying_security_review: 2,
+    code_review: 3, applying_code_review: 3,
+    uiux_review: 4, applying_uiux_review: 4,
+    opening_pull_request: 5, awaiting_human: 5,
   };
   const ICONS = {
     issue: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.25"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/></svg>',
-    pull: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.75"/><circle cx="4" cy="12.5" r="1.75"/><circle cx="12" cy="12.5" r="1.75"/><path d="M4 5.25v5.5M12 10.75V6a2 2 0 0 0-2-2H7.5M9 2.5 7.5 4 9 5.5"/></svg>',
   };
   const tbody = document.getElementById("tasks");
   let tasks = [];
@@ -91,10 +92,6 @@
     if (text) a.append(text);
     a.addEventListener("click", (event) => event.stopPropagation());
     return a;
-  }
-
-  function pullNumber(task) {
-    return task.pull_request ? `#${task.pull_request.split("/").pop()}` : "";
   }
 
   function ago(ts) {
@@ -139,12 +136,11 @@
   /** Plain-words current state, and how to color it. */
   function now(task) {
     const seconds = Math.floor(Date.now() / 1000);
-    if (task.status === "merged") return ["merged", "good"];
     if (task.attention === "stuck") return [`stuck: ${task.last_failure ?? "out of retries"}`, "bad"];
     if (task.attention === "backing_off") {
       return [`failed, retrying in ${duration(Math.max(0, task.retry_at - seconds))}`, "warn"];
     }
-    if (task.status === "awaiting_human_review") return [`waiting for you on PR ${pullNumber(task)}`, "you"];
+    if (task.status === "awaiting_human") return ["waiting for you", "you"];
     if (task.working) return [`${task.working} working`, ""];
     if (task.status === "unreadable_log") return ["log unreadable", "bad"];
     return [task.status.replaceAll("_", " "), ""];
@@ -161,8 +157,7 @@
       const [text, tone] = now(task);
       const state = cell(row, text, tone);
       if (task.last_failure) state.title = task.last_failure;
-      cell(row, task.status === "merged" ? "—" : ago(task.since), "num");
-      cell(row, iconLink(task.pull_request, "pull", "Open pull request", pullNumber(task)));
+      cell(row, ago(task.since), "num");
     }
   }
 

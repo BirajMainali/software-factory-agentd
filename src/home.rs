@@ -1,16 +1,19 @@
-//! The factory home: clones, worktrees, and task logs. Lives outside this repo and
-//! every product repo.
+//! The factory home (`$FACTORY_HOME`): per-task event logs, locks, and workspaces.
 
 use crate::github::GitHubUrl;
 use std::env;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error("set FACTORY_HOME or HOME to locate the factory home")]
+    #[error("set FACTORY_HOME to the factory home directory")]
     NoHome,
+    #[error("set FACTORY_DIR to the folder name agents and the runtime share in a workspace")]
+    NoFactoryDir,
+    #[error("FACTORY_DIR must be a relative path inside the workspace, got {0:?}")]
+    InvalidFactoryDir(String),
     #[error("cannot lock {path}: {source}")]
     Lock {
         path: PathBuf,
@@ -19,17 +22,11 @@ pub(crate) enum Error {
     },
 }
 
-/// `$FACTORY_HOME`, else `$XDG_DATA_HOME/software-factory`, else
-/// `~/.local/share/software-factory`.
+/// The factory home, from `$FACTORY_HOME`. Required: no built-in default.
 pub(crate) fn home() -> Result<PathBuf, Error> {
-    if let Some(dir) = env::var_os("FACTORY_HOME") {
-        return Ok(dir.into());
-    }
-    if let Some(dir) = env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(dir).join("software-factory"));
-    }
-    env::var_os("HOME")
-        .map(|dir| PathBuf::from(dir).join(".local/share/software-factory"))
+    env::var_os("FACTORY_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
         .ok_or(Error::NoHome)
 }
 
@@ -49,6 +46,27 @@ pub(crate) fn task_lock_path(task_dir: &Path) -> PathBuf {
     task_dir.join("lock")
 }
 
+/// Folder inside each workspace where the runtime and agents exchange files (issue
+/// text, plan, report), from `$FACTORY_DIR`. Required: no built-in default. Must be a
+/// relative path inside the workspace.
+pub(crate) fn factory_dir() -> Result<String, Error> {
+    let name = env::var("FACTORY_DIR").map_err(|_| Error::NoFactoryDir)?;
+    let inside_workspace = !name.is_empty()
+        && Path::new(&name)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)));
+    if inside_workspace {
+        Ok(name)
+    } else {
+        Err(Error::InvalidFactoryDir(name))
+    }
+}
+
+/// The directory a task's agent sessions run in. Agents own everything in it.
+pub(crate) fn workspace_dir(task_dir: &Path) -> PathBuf {
+    task_dir.join("workspace")
+}
+
 /// The task's append-only event log.
 pub(crate) fn events_path(task_dir: &Path) -> PathBuf {
     task_dir.join("events.jsonl")
@@ -63,13 +81,6 @@ pub(crate) fn try_lock(path: &Path) -> Result<Option<File>, Error> {
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(source)) => Err(lock_error(path, source)),
     }
-}
-
-/// Take `path`'s exclusive lock, waiting for the holder to release it.
-pub(crate) fn lock(path: &Path) -> Result<File, Error> {
-    let file = open_lock_file(path)?;
-    file.lock().map_err(|source| lock_error(path, source))?;
-    Ok(file)
 }
 
 fn open_lock_file(path: &Path) -> Result<File, Error> {

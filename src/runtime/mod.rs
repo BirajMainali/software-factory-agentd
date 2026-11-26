@@ -127,7 +127,7 @@ fn schedule(home: &Path, exe: &Path, issue: GitHubUrl, running: &mut BTreeMap<St
         }
     };
     let backing_off = state.retry_at().is_some_and(|at| workflow::now() < at);
-    if state.merged || state.is_stuck() || backing_off {
+    if state.is_finished() || state.is_stuck() || backing_off {
         return;
     }
     // A worker this runtime did not start (manual run, previous runtime) may hold it.
