@@ -1,7 +1,7 @@
 //! What happened to a task. The log of these is the durable record; all task state
 //! is derived by replaying it.
 
-use super::sequence::Role;
+use super::step::Step;
 use crate::opencode::Outcome;
 use serde::{Deserialize, Serialize};
 
@@ -9,33 +9,35 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum Event {
     WorkerStarted,
+    /// The issue's title, recorded when first seen or changed.
+    IssueFetched {
+        title: String,
+    },
     /// The task's main opencode session.
     SessionOpened {
         session: String,
     },
-    /// The router created `role`'s sub-agent session under the main session.
+    /// The router created step `step`'s sub-agent session under the main session.
     SubagentStarted {
-        role: Role,
+        step: Step,
         session: String,
         parent: String,
     },
-    /// Recorded before prompting `session` for sequence step `step`, with the
+    /// Recorded before prompting `session` for `step`, with the
     /// session's last finished run before it (`after`).
     TurnStarted {
-        step: usize,
-        role: Role,
+        step: Step,
         session: String,
         after: Option<String>,
     },
-    /// opencode reported the sub-agent's run ended.
+    /// opencode reported step `step`'s run ended.
     SubagentFinished {
-        role: Role,
-        session: String,
+        step: Step,
         outcome: Outcome,
     },
-    /// Sequence step `step` is done; the next one runs.
+    /// `step` is done; [`Step::next`] runs.
     StepCompleted {
-        step: usize,
+        step: Step,
     },
     WorkerFailed {
         reason: String,

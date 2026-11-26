@@ -8,13 +8,15 @@ mod prompts;
 
 use super::event::Event;
 use super::log::{self, Log};
-use super::sequence::Role;
 use super::state::TaskState;
+use super::step::Role;
 use crate::github::{self, GitHubUrl};
 use crate::home;
 use crate::opencode::{self, Client, Outcome};
+use serde::Serialize;
+use serde_json::json;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -67,18 +69,28 @@ impl Worker<'_> {
 
         let path = home::events_path(&dir);
         let mut state = TaskState::replay(&log::read(&path)?);
+        emit(&json!({
+            "event": "progress",
+            "issue": issue.to_string(),
+            "completed": state.completed(),
+            "next": state.current(),
+        }));
         if state.is_finished() {
             return Ok(());
         }
         let mut log = Log::open(&path)?;
-        state.apply(&log.append(Event::WorkerStarted)?);
+        let started = log.append(Event::WorkerStarted)?;
+        emit(&started);
+        state.apply(&started);
 
         let result = Self::drive(issue, &home, &mut log, state);
         if let Err(error) = &result {
             // The worker error is what matters; failing to log it must not hide it.
-            let _ = log.append(Event::WorkerFailed {
+            if let Ok(failed) = log.append(Event::WorkerFailed {
                 reason: error.to_string(),
-            });
+            }) {
+                emit(&failed);
+            }
         }
         result
     }
@@ -98,13 +110,18 @@ impl Worker<'_> {
             log,
             state,
         };
+        if worker.state.title.as_deref() != Some(worker.title.as_str()) {
+            worker.record(Event::IssueFetched {
+                title: worker.title.clone(),
+            })?;
+        }
         write_file(&worker.factory_file(prompts::ISSUE_FILE), &fetched.markdown)?;
         worker.run_workflow()
     }
 
     fn run_workflow(&mut self) -> Result<(), Error> {
-        while let Some(task) = self.state.next() {
-            self.run_step(self.state.next_step, task)?;
+        while let Some(step) = self.state.current() {
+            self.run_step(step)?;
         }
         Ok(())
     }
@@ -115,6 +132,7 @@ impl Worker<'_> {
 
     fn record(&mut self, event: Event) -> Result<(), Error> {
         let record = self.log.append(event)?;
+        emit(&record);
         self.state.apply(&record);
         Ok(())
     }
@@ -129,4 +147,12 @@ fn write_file(path: &Path, text: &str) -> Result<(), Error> {
         fs::create_dir_all(parent).map_err(write_error)?;
     }
     fs::write(path, text).map_err(write_error)
+}
+
+/// One machine-readable progress line on stdout.
+fn emit(value: &impl Serialize) {
+    if let Ok(line) = serde_json::to_string(value) {
+        // A closed stdout must not stop the worker.
+        let _ = writeln!(io::stdout(), "{line}");
+    }
 }

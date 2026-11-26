@@ -37,6 +37,7 @@
   .pipeline span.now { background: var(--accent); }
   .pipeline.stuck span.now { background: var(--bad); }
   .pipeline.backing_off span.now { background: var(--warn); }
+  .title { margin-left: .5rem; }
   .stage { font-size: .8125rem; color: var(--muted); margin-top: 2px; }
   .bad { color: var(--bad); }
   .warn { color: var(--warn); }
@@ -60,14 +61,6 @@
 <p id="empty" hidden>No tasks yet.</p>
 
 <script>
-  const STEPS = ["plan", "dev", "security", "code", "ui/ux", "human"];
-  const STEP_OF = {
-    planning: 0, developing: 1,
-    security_review: 2, applying_security_review: 2,
-    code_review: 3, applying_code_review: 3,
-    uiux_review: 4, applying_uiux_review: 4,
-    opening_pull_request: 5, awaiting_human: 5,
-  };
   const ICONS = {
     issue: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.25"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/></svg>',
   };
@@ -107,21 +100,26 @@
     return `${Math.floor(seconds / 86400)}d ${Math.floor(seconds % 86400 / 3600)}h`;
   }
 
+  /** Why a task is held back, if it is: "stuck", "backing_off", or "". */
+  function held(task) {
+    if (task.stuck) return "stuck";
+    if (task.retry_at && task.retry_at > Math.floor(Date.now() / 1000)) return "backing_off";
+    return "";
+  }
+
   function pipeline(task) {
     const wrap = document.createElement("div");
     const bar = document.createElement("div");
-    bar.className = `pipeline ${task.attention ?? ""}`;
-    const step = STEP_OF[task.status] ?? -1;
-    STEPS.forEach((name, index) => {
+    bar.className = `pipeline ${held(task)}`;
+    for (let index = 0; index < task.steps; index++) {
       const segment = document.createElement("span");
-      segment.title = name;
-      if (index < step) segment.className = "done";
-      else if (index === step) segment.className = "now";
+      if (index < task.step) segment.className = "done";
+      else if (index === task.step) segment.className = "now";
       bar.append(segment);
-    });
+    }
     const label = document.createElement("div");
     label.className = "stage";
-    label.textContent = task.status.replaceAll("_", " ");
+    label.textContent = task.agent ? `step ${task.step + 1} of ${task.steps}` : "all steps done";
     wrap.append(bar, label);
     return wrap;
   }
@@ -135,15 +133,14 @@
 
   /** Plain-words current state, and how to color it. */
   function now(task) {
-    const seconds = Math.floor(Date.now() / 1000);
-    if (task.attention === "stuck") return [`stuck: ${task.last_failure ?? "out of retries"}`, "bad"];
-    if (task.attention === "backing_off") {
-      return [`failed, retrying in ${duration(Math.max(0, task.retry_at - seconds))}`, "warn"];
+    if (task.unreadable) return ["log unreadable", "bad"];
+    if (held(task) === "stuck") return [`stuck: ${task.last_failure ?? "out of retries"}`, "bad"];
+    if (held(task) === "backing_off") {
+      const seconds = task.retry_at - Math.floor(Date.now() / 1000);
+      return [`failed, retrying in ${duration(seconds)}`, "warn"];
     }
-    if (task.status === "awaiting_human") return ["waiting for you", "you"];
-    if (task.working) return [`${task.working} working`, ""];
-    if (task.status === "unreadable_log") return ["log unreadable", "bad"];
-    return [task.status.replaceAll("_", " "), ""];
+    if (!task.agent) return ["waiting for you", "you"];
+    return [`${task.agent} ${task.running ? "working" : "next"}`, ""];
   }
 
   function renderTable() {
@@ -152,7 +149,13 @@
     for (const task of tasks) {
       const row = tbody.insertRow();
       cell(row, task.repo);
-      cell(row, iconLink(task.issue, "issue", `Open issue #${task.number}`, `#${task.number}`));
+      const issue = cell(row, iconLink(task.issue, "issue", `Open issue #${task.number}`, `#${task.number}`));
+      if (task.title) {
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = task.title;
+        issue.append(title);
+      }
       cell(row, pipeline(task));
       const [text, tone] = now(task);
       const state = cell(row, text, tone);

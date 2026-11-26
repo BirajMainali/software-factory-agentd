@@ -2,9 +2,8 @@
 //! events through [`TaskState::apply`], so a restart rebuilds exactly this state.
 
 use super::event::{Event, Record};
-use super::sequence::{Role, SEQUENCE, Task};
+use super::step::{Role, Step};
 use crate::opencode::Outcome;
-use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// Failed worker runs after which the runtime stops retrying until a human steps in.
@@ -15,32 +14,27 @@ const RETRY_BACKOFF_SECS: u64 = 60;
 /// A turn the worker prompted and has not completed: running, or cut off by a crash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OpenTurn {
-    pub(crate) step: usize,
+    pub(crate) step: Step,
     pub(crate) session: String,
     /// The session's last finished run before this turn's prompt.
     pub(crate) after: Option<String>,
 }
 
-/// Why a task needs a human or is held back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Attention {
-    AwaitingHuman,
-    Stuck,
-    BackingOff,
-}
-
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TaskState {
-    /// Index into [`SEQUENCE`] of the next step to run.
-    pub(crate) next_step: usize,
+    /// The issue's title, once fetched.
+    pub(crate) title: Option<String>,
+    /// The step to run next, unless `finished`.
+    pub(crate) step: Step,
+    /// Agents are done; the task waits for a human.
+    pub(crate) finished: bool,
     /// The task's main opencode session.
     pub(crate) main_session: Option<String>,
     /// Latest sub-agent session per role; continued by steps that resume a role.
     pub(crate) children: BTreeMap<Role, String>,
     pub(crate) turn: Option<OpenTurn>,
-    /// Sub-agent created for the next step but not yet prompted.
-    pub(crate) pending_child: Option<(Role, String)>,
+    /// Sub-agent created for a step but not yet prompted.
+    pub(crate) pending_child: Option<(Step, String)>,
     /// Failed worker exits since the last progress.
     pub(crate) failures: u32,
     pub(crate) last_failure_at: u64,
@@ -66,16 +60,16 @@ impl TaskState {
         self.updated = record.ts;
         match &record.event {
             Event::WorkerStarted => {}
+            Event::IssueFetched { title } => self.title = Some(title.clone()),
             Event::SessionOpened { session } => self.main_session = Some(session.clone()),
-            Event::SubagentStarted { role, session, .. } => {
-                self.children.insert(*role, session.clone());
-                self.pending_child = Some((*role, session.clone()));
+            Event::SubagentStarted { step, session, .. } => {
+                self.children.insert(step.role(), session.clone());
+                self.pending_child = Some((*step, session.clone()));
             }
             Event::TurnStarted {
                 step,
                 session,
                 after,
-                ..
             } => {
                 self.pending_child = None;
                 self.turn = Some(OpenTurn {
@@ -91,7 +85,10 @@ impl TaskState {
             }
             Event::StepCompleted { step } => {
                 self.turn = None;
-                self.next_step = step + 1;
+                match step.next() {
+                    Some(next) => self.step = next,
+                    None => self.finished = true,
+                }
                 self.step_since = record.ts;
                 self.failures = 0;
                 self.last_failure = None;
@@ -106,14 +103,21 @@ impl TaskState {
         }
     }
 
-    /// The next task to run; `None` once the whole sequence ran.
-    pub(crate) fn next(&self) -> Option<Task> {
-        SEQUENCE.get(self.next_step).copied()
+    /// The step to run next; `None` once agents are done.
+    pub(crate) fn current(&self) -> Option<Step> {
+        (!self.finished).then_some(self.step)
     }
 
-    /// The sequence ran to the end; the task waits for a human.
+    /// Steps already done, in route order.
+    pub(crate) fn completed(&self) -> Vec<Step> {
+        let current = self.current();
+        Step::route()
+            .take_while(|step| Some(*step) != current)
+            .collect()
+    }
+
     pub(crate) fn is_finished(&self) -> bool {
-        self.next().is_none()
+        self.finished
     }
 
     /// Out of retries: the runtime no longer schedules it.
@@ -131,28 +135,5 @@ impl TaskState {
             self.last_failure_at
                 .saturating_add(RETRY_BACKOFF_SECS.saturating_mul(factor)),
         )
-    }
-
-    pub(crate) fn attention(&self, now: u64) -> Option<Attention> {
-        if self.is_finished() {
-            Some(Attention::AwaitingHuman)
-        } else if self.is_stuck() {
-            Some(Attention::Stuck)
-        } else if self.retry_at().is_some_and(|at| now < at) {
-            Some(Attention::BackingOff)
-        } else {
-            None
-        }
-    }
-
-    /// Agent working on the current step right now, if a turn is in flight.
-    pub(crate) fn working_agent(&self) -> Option<&'static str> {
-        let turn = self.turn.as_ref()?;
-        SEQUENCE.get(turn.step).map(|task| task.role().agent())
-    }
-
-    /// Short machine-readable status for the dashboard.
-    pub(crate) fn status(&self) -> &'static str {
-        self.next().map_or("awaiting_human", Task::status)
     }
 }

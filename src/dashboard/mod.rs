@@ -4,7 +4,7 @@
 
 use crate::github::GitHubUrl;
 use crate::home;
-use crate::workflow::{self, Attention, TaskState};
+use crate::workflow::{self, Step, TaskState};
 use serde::Serialize;
 use serde_json::json;
 use std::fs;
@@ -35,17 +35,25 @@ pub(crate) enum Error {
     },
 }
 
+/// Facts about a task; the page decides how to word them.
 #[derive(Serialize)]
 struct TaskView {
     issue: String,
     repo: String,
     number: String,
-    status: &'static str,
-    attention: Option<Attention>,
-    /// Agent whose sub-agent session is working right now.
-    working: Option<&'static str>,
-    last_failure: Option<String>,
+    title: Option<String>,
+    /// The log could not be read; nothing else is known.
+    unreadable: bool,
+    /// Steps done, out of `steps`.
+    step: usize,
+    steps: usize,
+    /// Agent for the current step; `None` once agents are done.
+    agent: Option<&'static str>,
+    /// The next step's agent is running now.
+    running: bool,
+    stuck: bool,
     retry_at: Option<u64>,
+    last_failure: Option<String>,
     since: u64,
     updated: u64,
 }
@@ -146,25 +154,28 @@ fn stream_events(stream: &mut TcpStream, home: &Path) -> io::Result<()> {
 }
 
 fn snapshot(home: &Path) -> Vec<TaskView> {
-    let now = workflow::now();
     let mut tasks: Vec<TaskView> = task_refs(&home::tasks_root(home))
         .into_iter()
-        .map(|issue| view(home, &issue, now))
+        .map(|issue| view(home, &issue))
         .collect();
     tasks.sort_by_key(|task| std::cmp::Reverse(task.updated));
     tasks
 }
 
-fn view(home: &Path, issue: &GitHubUrl, now: u64) -> TaskView {
+fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     let mut view = TaskView {
         issue: issue.to_string(),
         repo: issue.repo_slug(),
         number: issue.number.to_string(),
-        status: "unreadable_log",
-        attention: None,
-        working: None,
-        last_failure: None,
+        title: None,
+        unreadable: true,
+        step: 0,
+        steps: Step::route().count(),
+        agent: None,
+        running: false,
+        stuck: false,
         retry_at: None,
+        last_failure: None,
         since: 0,
         updated: 0,
     };
@@ -172,9 +183,14 @@ fn view(home: &Path, issue: &GitHubUrl, now: u64) -> TaskView {
         return view;
     };
     let state = TaskState::replay(&records);
-    view.status = state.status();
-    view.attention = state.attention(now);
-    view.working = state.working_agent();
+    view.unreadable = false;
+    view.title = state.title.clone();
+    view.step = state.current().map_or(view.steps, |step| {
+        Step::route().take_while(|done| *done != step).count()
+    });
+    view.agent = state.current().map(|step| step.role().agent());
+    view.running = state.turn.is_some();
+    view.stuck = state.is_stuck();
     view.retry_at = state.retry_at();
     view.last_failure = state.last_failure.as_deref().map(summary);
     view.since = state.step_since;

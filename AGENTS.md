@@ -14,7 +14,7 @@ src/process.rs       child processes with timeouts
 src/home.rs          $FACTORY_HOME paths, file locks
 src/github/          GitHub URL/client, issue/PR fetching
 src/opencode/        local opencode service API client (sessions, prompts, run outcomes)
-src/workflow/        fixed task sequence, event log + replay, task state
+src/workflow/        route between steps (step.rs), event log + replay, task state
 src/workflow/worker/ one issue: main loop, sub-agent turns, prompts
 src/runtime/         scheduler: one worker process per labelled issue
 src/dashboard/       read-only HTTP + SSE view of each task's current state
@@ -94,8 +94,8 @@ tasks/<owner>/<repo>/<n>/workspace/    sessions' working directory; agents own i
 All task state is derived by replaying `events.jsonl` through `TaskState::apply`;
 live runs use the same path.
 
-The route is fixed (`workflow/sequence.rs`); every issue runs the same nine tasks in
-order, and agents never choose what runs next:
+The route is fixed: `Step::next` in `workflow/step.rs` says which step runs after
+which, and agents never choose what runs next:
 
 ```
 plan → develop → security review → developer → code review → developer → ui/ux review → developer → open PR → awaiting human
@@ -121,7 +121,7 @@ the router creates under it (`parentID`, `agent`). opencode wakes main whenever 
 sub-agent reports back; the worker interrupts main.
 
 The runtime picks open issues labelled `factory`, runs at most 4 workers, and retries a
-failed worker up to 3 times with doubling backoff. The human step after the sequence is
+failed worker up to 3 times with doubling backoff. The human step after `open PR` is
 not built yet.
 
 Dummy agents for each role live in `test/agents/`. OpenCode only discovers agents
