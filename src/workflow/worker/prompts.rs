@@ -7,22 +7,22 @@ use crate::workflow::step::{Artifact, Slots, Step, def};
 use std::path::{Path, PathBuf};
 
 /// The prompt for one step.
-pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: Slots) -> String {
+pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots) -> String {
     let def = def(step);
     let mut lines = vec![format!("{}: {issue}", def.instruction)];
-    if let Some(read) = def.reads {
+    for (read, n) in &slots.reads {
         lines.push(format!(
             "{}: {}",
             read.label(),
-            file(dir, read, slots.read).display()
+            file(dir, *read, *n).display()
         ));
     }
     if let Step::Review(kind) = step {
         lines.push(format!("Review: {}", kind.as_str()));
     }
-    if step == Step::OpenPullRequest {
+    if step == Step::DevelopPlan {
         lines.push(format!(
-            "Reference the issue in the PR (for example `Fixes #{}`) so it can be found.",
+            "Push the branch and open a draft PR that references this issue (for example `Fixes #{}`).",
             issue.number
         ));
     }
@@ -42,7 +42,7 @@ pub(super) fn file(dir: &Path, artifact: Artifact, n: u32) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::step::ReviewKind;
+    use crate::workflow::step::{Reads, ReviewKind};
 
     fn issue(n: u64) -> GitHubUrl {
         format!("https://github.com/o/r/issues/{n}")
@@ -50,19 +50,34 @@ mod tests {
             .unwrap()
     }
 
-    fn slots(read: u32, write: u32) -> Slots {
-        Slots { read, write }
+    fn slots(reads: &[(Artifact, u32)], write: u32) -> Slots {
+        Slots {
+            reads: reads.to_vec(),
+            write,
+        }
+    }
+
+    fn slots_for(step: Step, write: u32) -> Slots {
+        let reads = match def(step).reads {
+            Reads::None => Vec::new(),
+            Reads::One(artifact) => vec![(artifact, 1)],
+            Reads::AllReviews => ReviewKind::ALL
+                .iter()
+                .map(|kind| (Artifact::Review(*kind), 1))
+                .collect(),
+        };
+        Slots { reads, write }
     }
 
     #[test]
     fn plans_and_reviews_are_numbered_per_run() {
         let issue = issue(7);
         let dir = Path::new("/work");
-        let plan = for_step(Step::Plan, &issue, dir, slots(1, 2));
+        let plan = for_step(Step::Plan, &issue, dir, &slots(&[(Artifact::Issue, 1)], 2));
         assert!(plan.contains("/work/issue.md"));
         assert!(plan.ends_with("/work/plan/2-plan.md"));
 
-        let review = for_step(Step::Review(ReviewKind::Code), &issue, dir, slots(1, 3));
+        let review = for_step(Step::Review(ReviewKind::Code), &issue, dir, &slots(&[], 3));
         assert!(review.contains("Review: code"));
         assert!(review.ends_with("/work/review/3-code.md"));
     }
@@ -71,21 +86,55 @@ mod tests {
     fn every_step_names_a_file_in_the_given_path() {
         // DevelopPrFeedback is not in route(): the PR watch selects it.
         for step in Step::route().chain(Some(Step::DevelopPrFeedback)) {
-            let prompt = for_step(step, &issue(7), Path::new("/work"), slots(1, 1));
+            let prompt = for_step(step, &issue(7), Path::new("/work"), &slots_for(step, 1));
             assert!(prompt.contains("/work/"), "{step:?}: {prompt}");
         }
     }
 
     #[test]
-    fn apply_review_prompt_names_both_files() {
-        let develop = for_step(
+    fn develop_plan_asks_for_a_draft_pr_referencing_the_issue() {
+        let prompt = for_step(
+            Step::DevelopPlan,
+            &issue(7),
+            Path::new("/work"),
+            &slots_for(Step::DevelopPlan, 2),
+        );
+        assert!(
+            prompt.contains("open a draft PR that references this issue (for example `Fixes #7`)")
+        );
+    }
+
+    #[test]
+    fn address_reviews_prompt_names_all_three_reviews() {
+        let prompt = for_step(
+            Step::AddressReviews,
+            &issue(7),
+            Path::new("/work"),
+            &slots(
+                &[
+                    (Artifact::Review(ReviewKind::Security), 1),
+                    (Artifact::Review(ReviewKind::Code), 2),
+                    (Artifact::Review(ReviewKind::UiUx), 1),
+                ],
+                3,
+            ),
+        );
+        assert!(prompt.contains("Review (security): /work/review/1-security.md"));
+        assert!(prompt.contains("Review (code): /work/review/2-code.md"));
+        assert!(prompt.contains("Review (uiux): /work/review/1-uiux.md"));
+        assert!(prompt.ends_with("/work/development/3-development.md"));
+    }
+
+    #[test]
+    fn legacy_develop_review_still_names_its_review() {
+        let prompt = for_step(
             Step::DevelopReview(ReviewKind::Code),
             &issue(7),
             Path::new("/work"),
-            slots(2, 3),
+            &slots(&[(Artifact::Review(ReviewKind::Code), 2)], 3),
         );
-        assert!(develop.contains("Review (code): /work/review/2-code.md"));
-        assert!(develop.ends_with("/work/development/3-development.md"));
+        assert!(prompt.contains("Review (code): /work/review/2-code.md"));
+        assert!(prompt.ends_with("/work/development/3-development.md"));
     }
 
     #[test]
@@ -94,7 +143,7 @@ mod tests {
             Step::DevelopPrFeedback,
             &issue(7),
             Path::new("/work"),
-            slots(2, 6),
+            &slots(&[(Artifact::PrFeedback, 2)], 6),
         );
         assert!(prompt.contains("PR feedback: /work/pr-feedback/2-pr-feedback.md"));
         assert!(prompt.ends_with("/work/development/6-development.md"));
@@ -104,12 +153,12 @@ mod tests {
     fn developer_steps_write_a_development_summary() {
         let steps = [
             Step::DevelopPlan,
-            Step::DevelopReview(ReviewKind::Security),
+            Step::AddressReviews,
             Step::OpenPullRequest,
         ];
         for step in steps {
             assert!(
-                for_step(step, &issue(7), Path::new("/work"), slots(1, 4))
+                for_step(step, &issue(7), Path::new("/work"), &slots_for(step, 4))
                     .ends_with("/work/development/4-development.md"),
                 "{step:?}"
             );

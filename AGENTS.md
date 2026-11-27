@@ -16,7 +16,7 @@ src/github/          GitHub URL/client, issue/PR fetching
 src/opencode/        local opencode service API client (sessions, prompts, run outcomes)
 src/workflow/        route between steps (step.rs), event log + replay, task state
 src/workflow/worker/ one issue: main loop, sub-agent turns, prompts
-src/runtime/         scheduler: one worker process per labelled issue
+src/supervisor.rs    one work item: route it, then watch its PR until merged/closed
 src/dashboard/       read-only HTTP + SSE view of task state and its artifacts
 ```
 
@@ -27,20 +27,22 @@ binary or crate appears. No CI yet.
 
 - The route is one table (`def` in `workflow/step.rs`): agent, session, artifact
   read, artifact written, next step. Routing reads the table; a new step is one row.
-- Runtime: schedules tasks, owns lifecycle, persists events, recovers after crashes.
-- Workers: independent processes; each routes one task through AI agents (currently
-  OpenCode) and records events.
+- Supervisor: one process per work item from submit to PR close; it routes the task,
+  then watches the PR, resumes the developer on feedback, and exits on merge/close.
+- Workers: one per task; route it through AI agents (currently OpenCode) and record
+  events. They never spawn another worker.
 - Dashboard: observes current task state; it does not own task state.
 - Components communicate through events. Don't add a direct cross-component call that
   bypasses the event path; if one is unavoidable, record the event too.
-- Only the runtime schedules. Workers route one task and never spawn more workers.
+- Issue discovery and priority are external: `work --issue` is the only entry point.
+  Agentd never lists issues or polls repositories.
 
 ## Invariants
 
 - Router, not controller: agents own all git and GitHub work (clone, branch, commit,
-  push, PR, merge). The runtime only reads GitHub (issues, PR feedback) to decide what
-  to route; it never changes repository state.
-- One worker per task; it holds the task lock.
+  push, PR, merge). The supervisor only reads GitHub (PR feedback); it never changes
+  repository state.
+- One supervisor per task; it holds the task lock for the route and the PR watch.
 - The event log is the durable record; state is derived. Restart/replay must rebuild it
   without duplicating side effects.
 - Recovery and retries are idempotent: assume a crash can happen before and after any
@@ -73,8 +75,7 @@ issue.
 ```sh
 cargo run -- fetch-issue <issue-url> <output-dir>   # writes <output-dir>/issue.md
 cargo run -- fetch-pr <pr-url> <output-dir>         # writes <output-dir>/pr-feedback/<n>-pr-feedback.md
-cargo run -- work --issue <issue-url> --path <dir>  # start one background worker for <dir>
-cargo run -- run <owner/repo>...                    # schedule workers for labelled issues
+cargo run -- work --issue <issue-url> --path <dir>  # own one issue until its PR closes
 cargo run -- dashboard [<addr>]                     # default 127.0.0.1:7878
 cargo run -- spawn --prompt "..." [--session <id>] [--agent <id>] [--title <text>]
 cargo fmt --check
@@ -82,8 +83,8 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 `work` re-execs itself detached and prints `{"issue":…,"pid":…}`; pass `--foreground`
-to run in this process instead. The scheduler always passes `--foreground` so it can
-reap the process and record its exit.
+to run in this process instead. The detached process owns the task until its PR merges
+or closes: route, then PR watch, then developer runs for new feedback.
 
 `spawn` creates (or, with `--session`, reuses) a session through the opencode service,
 prompts it, waits for the run to end, and prints `{"session":…,"outcome":…}`.
@@ -94,11 +95,10 @@ Per task under `$FACTORY_HOME`:
 
 ```
 tasks/<owner>/<repo>/<n>/events.jsonl  append-only event log (JSON Lines)
-tasks/<owner>/<repo>/<n>/lock          held by the task's one worker
-tasks/<owner>/<repo>/<n>/workspace/    work root `run` passes to `work`; a manual `work` names its own
+tasks/<owner>/<repo>/<n>/lock          held by the task's one supervisor
 ```
 
-In the task's folder, `<--path>/#<n>/` (for `run`, `<workspace>/#<n>/`):
+In the task's folder, `<--path>/#<n>/`:
 
 ```
 issue.md                         issue text, written at start
@@ -115,21 +115,22 @@ The route is fixed: `Step::next` in `workflow/step.rs` says which step runs afte
 which, and agents never choose what runs next:
 
 ```
-plan → develop → security review → developer → code review → developer → ui/ux review → developer → open PR
-  → await PR feedback → developer → await PR feedback → …
+plan → develop (push + draft PR) → security review → code review → ui/ux review
+  → developer (all reviews, push) → PR ready → watch PR → developer (feedback) → watch PR → …
 ```
 
 | Task | Agent | Session | Prompt (absolute paths in the task's folder) |
 |---|---|---|---|
-| plan | solution-architect | new | issue, issue text, where to write the plan |
-| develop | developer | new | issue, plan |
-| review (×3) | reviewer-security / -code / -uiux | new | issue, which review, the numbered file to write it to |
-| develop (×3) | developer | resumes developer | the finished review file |
-| open PR | developer | resumes developer | all changes approved: open the PR |
+| plan | planner | new | issue, issue text, where to write the plan |
+| develop | developer | new | issue, plan; push and open a draft PR |
+| review (×3) | reviewer-security / -code / -uiux | new | the pushed branch, which review, the numbered file to write it to |
+| develop (all reviews) | developer | resumes developer | the three finished review files; push the fixes |
+| PR ready | developer | resumes developer | all reviews addressed: mark the PR ready |
 | develop (PR feedback) | developer | resumes developer | the numbered `pr-feedback` file, and where to write the development summary |
 
-A task is done when opencode reports its run `succeeded`; `failed` or `interrupted`
-fails the worker, and the runtime retries. What agents write and how they work is
+A route is done when opencode reports its last run `succeeded`; `failed` or
+`interrupted` fails the worker, and the supervisor retries. The task is done when its
+PR merges or closes, which ends the supervisor. What agents write and how they work is
 theirs.
 
 Sessions: the worker drives the local opencode service API (the opencode app must be
@@ -139,12 +140,13 @@ stdin, never argv or logs). One main session per task (titled
 the router creates under it (`parentID`, `agent`). opencode wakes main whenever a
 sub-agent reports back; the worker interrupts main.
 
-The runtime picks open issues labelled `factory`, runs at most 4 workers, and retries a
-failed worker up to 3 times with doubling backoff. Each poll it also watches the PR of
-every task that is waiting after its route: the PR is found through the issue's
-timeline, and when a review or comment is newer than the last one recorded
-(`PrFeedbackArrived`), the worker resumes the developer on the next
-`pr-feedback/<n>-pr-feedback.md`.
+The worker records the task's PR right after the first developer push
+(`PullRequestFound`), with the feedback already present; if GitHub has not indexed it
+yet, the supervisor retries after the route. The supervisor retries a failed worker up
+to 3 times with doubling backoff, then polls the PR. When a review or comment is newer
+than the last one recorded (`PrFeedbackArrived`), it resumes the developer on the next
+`pr-feedback/<n>-pr-feedback.md`. Merge or close records `PullRequestClosed` and
+exits.
 
 Dummy agents for each role live in `test/agents/`. OpenCode only discovers agents
 from `~/.config/opencode/agents/` (or its config), so link them there to test.

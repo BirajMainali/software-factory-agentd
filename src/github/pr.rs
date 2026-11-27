@@ -146,6 +146,8 @@ pub(crate) struct Snapshot {
     pub(crate) key: String,
     /// The PR is still open, so feedback can still be acted on.
     pub(crate) open: bool,
+    /// Reviews and comments already on the PR.
+    pub(crate) feedback: usize,
 }
 
 /// Fetch a pull request with `gh` and render it as Markdown: body, reviews, inline
@@ -341,6 +343,7 @@ fn render_pr(
         key: feedback_key(&feedback),
         markdown: out,
         open: pr.state == "open",
+        feedback: feedback.len(),
     }
 }
 

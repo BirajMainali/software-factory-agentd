@@ -1,7 +1,7 @@
 //! One worker per task: a router. It replays the task's event log, then spawns the
 //! next sub-agent, routes its reported stage, and routes human signals, until the
-//! workflow ends. What agents do, and how, is theirs. Holds the task lock throughout,
-//! so two workers never run one task.
+//! workflow ends. What agents do, and how, is theirs. The caller holds the task
+//! lock, so two processes never run one task.
 
 mod agents;
 mod prompts;
@@ -29,8 +29,6 @@ pub(crate) enum Error {
     Log(#[from] log::Error),
     #[error(transparent)]
     Agent(#[from] opencode::Error),
-    #[error("another worker is running {0}")]
-    Busy(String),
     #[error("agent {} run ended {outcome:?} in opencode", .role.agent())]
     SubagentEnded { role: Role, outcome: Outcome },
     #[error("no session for agent {}", .0.agent())]
@@ -72,9 +70,6 @@ impl Worker<'_> {
         issue.expect_issue()?;
         let home = home::home()?;
         let dir = home::task_dir(&home, &issue);
-        let Some(_lock) = home::try_lock(&home::task_lock_path(&dir))? else {
-            return Err(Error::Busy(issue.to_string()));
-        };
 
         let events = home::events_path(&dir);
         let mut state = TaskState::replay(&log::read(&events)?);
@@ -145,7 +140,30 @@ impl Worker<'_> {
     fn run_workflow(&mut self) -> Result<(), Error> {
         while let Some(step) = self.state.current() {
             self.run_step(step)?;
+            if matches!(step.role(), Role::Developer) {
+                // Record it as soon as the first push opens the PR, so the
+                // dashboard links it while the reviews still run.
+                self.record_pr()?;
+            }
         }
+        Ok(())
+    }
+
+    /// Record the task's PR once a developer step has opened it. Best-effort:
+    /// GitHub may not have indexed it yet, and the supervisor retries after the route.
+    fn record_pr(&mut self) -> Result<(), Error> {
+        if self.state.pr.is_some() {
+            return Ok(());
+        }
+        let Some(pr) = github::pr::for_issue(&self.issue)? else {
+            return Ok(());
+        };
+        let snapshot = github::pr::fetch(&pr)?;
+        let key = (snapshot.feedback == 0).then_some(snapshot.key);
+        self.record(Event::PullRequestFound {
+            url: pr.to_string(),
+            key,
+        })?;
         Ok(())
     }
 

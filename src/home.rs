@@ -59,12 +59,6 @@ pub(crate) fn task_lock_path(task_dir: &Path) -> PathBuf {
     task_dir.join("lock")
 }
 
-/// The directory a task's agent sessions run in, when the runtime schedules it.
-/// A manual `work` names its own path. Agents own everything in it.
-pub(crate) fn workspace_dir(task_dir: &Path) -> PathBuf {
-    task_dir.join("workspace")
-}
-
 pub(crate) fn events_path(task_dir: &Path) -> PathBuf {
     task_dir.join("events.jsonl")
 }

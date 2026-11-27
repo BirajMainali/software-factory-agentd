@@ -2,11 +2,11 @@
 //! events through [`TaskState::apply`], so a restart rebuilds exactly this state.
 
 use super::event::{Event, Record};
-use super::step::{Artifact, Role, Slots, Step, def};
+use super::step::{Artifact, Reads, ReviewKind, Role, Slots, Step, def};
 use crate::opencode::Outcome;
 use std::collections::BTreeMap;
 
-/// Failed worker runs after which the runtime stops retrying until a human steps in.
+/// Failed worker runs after which the supervisor stops retrying until a human steps in.
 const MAX_FAILURES: u32 = 3;
 /// Seconds before the first retry; doubles with each further failure.
 const RETRY_BACKOFF_SECS: u64 = 60;
@@ -33,6 +33,10 @@ pub(crate) struct TaskState {
     pub(crate) turn: Option<OpenTurn>,
     /// The folder the last worker wrote artifacts to.
     pub(crate) work_path: Option<String>,
+    /// The task's pull request, once it is known.
+    pub(crate) pr: Option<String>,
+    /// The PR is merged or closed; nothing wakes the task again.
+    pub(crate) pr_closed: bool,
     /// Sub-agent created for a step but not yet prompted.
     pub(crate) pending_child: Option<(Step, String)>,
     /// Times each artifact was written; the next run uses `runs + 1`.
@@ -98,6 +102,11 @@ impl TaskState {
                 self.last_failure = None;
             }
             Event::WorkPath { path } => self.work_path = Some(path.clone()),
+            Event::PullRequestFound { url, key } => {
+                self.pr = Some(url.clone());
+                self.feedback_key.clone_from(key);
+            }
+            Event::PullRequestClosed => self.pr_closed = true,
             Event::PrFeedbackArrived { number, key } => {
                 self.runs.insert(Artifact::PrFeedback, *number);
                 self.feedback_key = Some(key.clone());
@@ -127,19 +136,28 @@ impl TaskState {
             .collect()
     }
 
-    /// The numbered files `step` uses: the previous stage it reads and the one it
-    /// writes. A resumed turn keeps the numbers it already has.
+    /// The numbered files `step` uses: the stages it reads and the one it writes.
+    /// A resumed turn keeps the numbers it already has.
     pub(crate) fn slots(&self, step: Step, resumed: bool) -> Slots {
         let def = def(step);
+        let reads = match def.reads {
+            Reads::None => Vec::new(),
+            Reads::One(artifact) => vec![(artifact, self.run_count(artifact).max(1))],
+            Reads::AllReviews => ReviewKind::ALL
+                .iter()
+                .map(|kind| {
+                    let artifact = Artifact::Review(*kind);
+                    (artifact, self.run_count(artifact).max(1))
+                })
+                .collect(),
+        };
         Slots {
             write: if resumed {
                 self.run_count(def.writes).max(1)
             } else {
                 self.run_count(def.writes) + 1
             },
-            read: def
-                .reads
-                .map_or(1, |artifact| self.run_count(artifact).max(1)),
+            reads,
         }
     }
 
@@ -156,16 +174,20 @@ impl TaskState {
         self.feedback_key.as_deref()
     }
 
+    pub(crate) fn pr(&self) -> Option<&str> {
+        self.pr.as_deref()
+    }
+
     pub(crate) fn is_finished(&self) -> bool {
         self.finished
     }
 
-    /// Out of retries: the runtime no longer schedules it.
+    /// Out of retries: the supervisor no longer schedules it.
     pub(crate) fn is_stuck(&self) -> bool {
         !self.is_finished() && self.failures >= MAX_FAILURES
     }
 
-    /// Earliest time the runtime retries after a failure; `None` without failures.
+    /// Earliest time the supervisor retries after a failure; `None` without failures.
     pub(crate) fn retry_at(&self) -> Option<u64> {
         if self.failures == 0 {
             return None;
@@ -199,7 +221,10 @@ mod tests {
         let mut state = TaskState::default();
         assert_eq!(state.slots(Step::Plan, false).write, 1);
         prompt(&mut state, Step::Plan);
-        assert_eq!(state.slots(Step::DevelopPlan, false).read, 1);
+        assert_eq!(
+            state.slots(Step::DevelopPlan, false).read(Artifact::Plan),
+            1
+        );
         assert_eq!(state.slots(Step::Plan, false).write, 2);
 
         let code = Step::Review(ReviewKind::Code);
@@ -207,18 +232,66 @@ mod tests {
         assert_eq!(
             state
                 .slots(Step::DevelopReview(ReviewKind::Code), false)
-                .read,
+                .read(Artifact::Review(ReviewKind::Code)),
             1
         );
         prompt(&mut state, code);
         assert_eq!(
             state
                 .slots(Step::DevelopReview(ReviewKind::Code), false)
-                .read,
+                .read(Artifact::Review(ReviewKind::Code)),
             2
         );
         assert_eq!(state.slots(code, false).write, 3);
         assert_eq!(state.slots(code, true).write, 2);
+    }
+
+    #[test]
+    fn address_reviews_reads_the_latest_of_each_kind() {
+        let mut state = TaskState::default();
+        prompt(&mut state, Step::Review(ReviewKind::Security));
+        prompt(&mut state, Step::Review(ReviewKind::Code));
+        prompt(&mut state, Step::Review(ReviewKind::Code));
+        prompt(&mut state, Step::Review(ReviewKind::UiUx));
+
+        let slots = state.slots(Step::AddressReviews, false);
+        assert_eq!(slots.read(Artifact::Review(ReviewKind::Security)), 1);
+        assert_eq!(slots.read(Artifact::Review(ReviewKind::Code)), 2);
+        assert_eq!(slots.read(Artifact::Review(ReviewKind::UiUx)), 1);
+    }
+
+    #[test]
+    fn a_found_pr_seeds_seen_feedback_and_closed_ends_the_task() {
+        let mut state = TaskState::default();
+        state.apply(&Record {
+            ts: 1,
+            event: Event::PullRequestFound {
+                url: "https://github.com/o/r/pull/3".to_string(),
+                key: Some("0:".to_string()),
+            },
+        });
+        assert_eq!(state.pr(), Some("https://github.com/o/r/pull/3"));
+        assert_eq!(state.feedback_key(), Some("0:"));
+        assert!(!state.pr_closed);
+
+        state.apply(&Record {
+            ts: 2,
+            event: Event::PullRequestClosed,
+        });
+        assert!(state.pr_closed);
+    }
+
+    #[test]
+    fn a_found_pr_with_unseen_feedback_does_not_seed_the_key() {
+        let mut state = TaskState::default();
+        state.apply(&Record {
+            ts: 1,
+            event: Event::PullRequestFound {
+                url: "https://github.com/o/r/pull/3".to_string(),
+                key: None,
+            },
+        });
+        assert_eq!(state.feedback_key(), None);
     }
 
     #[test]
@@ -241,7 +314,12 @@ mod tests {
         };
         state.apply(&arrived(1, "1:2026-01-01T00:00:00Z"));
         assert_eq!(state.current(), Some(Step::DevelopPrFeedback));
-        assert_eq!(state.slots(Step::DevelopPrFeedback, false).read, 1);
+        assert_eq!(
+            state
+                .slots(Step::DevelopPrFeedback, false)
+                .read(Artifact::PrFeedback),
+            1
+        );
         assert_eq!(state.next_pr_feedback(), 2);
         assert_eq!(state.feedback_key(), Some("1:2026-01-01T00:00:00Z"));
 
@@ -254,7 +332,12 @@ mod tests {
         assert!(state.is_finished());
 
         state.apply(&arrived(2, "2:2026-01-02T00:00:00Z"));
-        assert_eq!(state.slots(Step::DevelopPrFeedback, false).read, 2);
+        assert_eq!(
+            state
+                .slots(Step::DevelopPrFeedback, false)
+                .read(Artifact::PrFeedback),
+            2
+        );
         assert_eq!(state.next_pr_feedback(), 3);
     }
 
@@ -263,29 +346,11 @@ mod tests {
         let mut state = TaskState::default();
         assert_eq!(state.slots(Step::DevelopPlan, false).write, 1);
         prompt(&mut state, Step::DevelopPlan);
-        assert_eq!(
-            state
-                .slots(Step::DevelopReview(ReviewKind::Security), false)
-                .write,
-            2
-        );
-        prompt(&mut state, Step::DevelopReview(ReviewKind::Security));
-        assert_eq!(
-            state
-                .slots(Step::DevelopReview(ReviewKind::Code), false)
-                .write,
-            3
-        );
-        prompt(&mut state, Step::DevelopReview(ReviewKind::Code));
-        assert_eq!(
-            state
-                .slots(Step::DevelopReview(ReviewKind::UiUx), false)
-                .write,
-            4
-        );
-        prompt(&mut state, Step::DevelopReview(ReviewKind::UiUx));
+        assert_eq!(state.slots(Step::AddressReviews, false).write, 2);
+        prompt(&mut state, Step::AddressReviews);
+        assert_eq!(state.slots(Step::OpenPullRequest, false).write, 3);
         prompt(&mut state, Step::OpenPullRequest);
-        assert_eq!(state.slots(Step::DevelopPlan, false).write, 6);
-        assert_eq!(state.slots(Step::OpenPullRequest, true).write, 5);
+        assert_eq!(state.slots(Step::DevelopPlan, false).write, 4);
+        assert_eq!(state.slots(Step::OpenPullRequest, true).write, 3);
     }
 }

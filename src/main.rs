@@ -3,7 +3,7 @@ mod github;
 mod home;
 mod opencode;
 mod process;
-mod runtime;
+mod supervisor;
 mod workflow;
 
 use std::collections::BTreeMap;
@@ -19,7 +19,6 @@ const USAGE: &str = "usage:
   agentd fetch-issue <issue-url> <output-dir>
   agentd fetch-pr <pr-url> <output-dir>
   agentd spawn --prompt <text> [--session <id>] [--agent <id>] [--title <text>]
-  agentd run <owner/repo>...
   agentd dashboard [<addr>]   (default 127.0.0.1:7878)";
 
 fn main() -> ExitCode {
@@ -41,7 +40,6 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         [command, url, dir] if command == "fetch-pr" => github::pr::fetch_pr(url, Path::new(dir))?,
         [command, rest @ ..] if command == "work" => work(rest)?,
         [command, rest @ ..] if command == "spawn" => spawn(rest)?,
-        [command, repos @ ..] if command == "run" => runtime::run(repos)?,
         [command, addr @ ..] if command == "dashboard" && addr.len() <= 1 => {
             let addr = addr.first().map_or(DEFAULT_DASHBOARD_ADDR, String::as_str);
             dashboard::serve(addr)?;
@@ -66,7 +64,7 @@ fn work(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Err(format!("unknown flag --{name}").into());
     }
     if foreground {
-        workflow::Worker::run(&issue, Path::new(&path))?;
+        supervisor::supervise(&issue, Path::new(&path))?;
     } else {
         submit(&issue, &path)?;
     }
@@ -96,7 +94,7 @@ fn submit(issue: &str, path: &str) -> Result<(), Box<dyn Error>> {
     let dir = home::task_dir(&home, &url);
     // Fail here, not silently in a detached child, if the task is already running.
     if home::try_lock(&home::task_lock_path(&dir))?.is_none() {
-        return Err(format!("another worker is already running {issue}").into());
+        return Err(format!("another process already owns {issue}").into());
     }
 
     let child = Command::new(std::env::current_exe()?)

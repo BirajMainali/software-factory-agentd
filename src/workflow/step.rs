@@ -15,6 +15,8 @@ pub(crate) enum Step {
     Review(ReviewKind),
     #[serde(rename = "develop_review", alias = "apply_review")]
     DevelopReview(ReviewKind),
+    /// The three reviews are in; the developer addresses them in one pass.
+    AddressReviews,
     OpenPullRequest,
     /// Selected by the PR watch, once per round of new feedback.
     #[serde(rename = "develop_pr_feedback", alias = "apply_pr_feedback")]
@@ -32,7 +34,7 @@ pub(crate) enum ReviewKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Role {
-    SolutionArchitect,
+    Planner,
     Developer,
     Reviewer(ReviewKind),
 }
@@ -55,30 +57,48 @@ pub(crate) enum Session {
     Resume,
 }
 
+/// What a step reads before it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reads {
+    None,
+    One(Artifact),
+    /// The latest review of each kind, collected before the developer runs.
+    AllReviews,
+}
+
 pub(crate) struct StepDef {
     pub(crate) agent: Role,
     pub(crate) session: Session,
-    pub(crate) reads: Option<Artifact>,
+    pub(crate) reads: Reads,
     pub(crate) writes: Artifact,
     pub(crate) next: Option<Step>,
     /// First line of the prompt, before `: <issue url>`.
     pub(crate) instruction: &'static str,
 }
 
-/// The numbered files one run uses: `read` is the previous stage, `write` its output.
-#[derive(Debug, Clone, Copy)]
+/// The numbered files one run uses: the stages it reads, and its output.
+#[derive(Debug, Clone)]
 pub(crate) struct Slots {
-    pub(crate) read: u32,
+    pub(crate) reads: Vec<(Artifact, u32)>,
     pub(crate) write: u32,
+}
+
+impl Slots {
+    pub(crate) fn read(&self, artifact: Artifact) -> u32 {
+        self.reads
+            .iter()
+            .find(|(read, _)| *read == artifact)
+            .map_or(1, |(_, n)| *n)
+    }
 }
 
 /// The one table. Adding a step means adding one row here.
 pub(crate) fn def(step: Step) -> StepDef {
     match step {
         Step::Plan => StepDef {
-            agent: Role::SolutionArchitect,
+            agent: Role::Planner,
             session: Session::Fresh,
-            reads: Some(Artifact::Issue),
+            reads: Reads::One(Artifact::Issue),
             writes: Artifact::Plan,
             next: Some(Step::DevelopPlan),
             instruction: "Here is the issue that you need to plan for",
@@ -86,7 +106,7 @@ pub(crate) fn def(step: Step) -> StepDef {
         Step::DevelopPlan => StepDef {
             agent: Role::Developer,
             session: Session::Fresh,
-            reads: Some(Artifact::Plan),
+            reads: Reads::One(Artifact::Plan),
             writes: Artifact::Development,
             next: Some(Step::Review(ReviewKind::Security)),
             instruction: "Here is the plan that you need to implement",
@@ -94,15 +114,28 @@ pub(crate) fn def(step: Step) -> StepDef {
         Step::Review(kind) => StepDef {
             agent: Role::Reviewer(kind),
             session: Session::Fresh,
-            reads: None,
+            reads: Reads::None,
             writes: Artifact::Review(kind),
-            next: Some(Step::DevelopReview(kind)),
+            next: Some(match kind {
+                ReviewKind::Security => Step::Review(ReviewKind::Code),
+                ReviewKind::Code => Step::Review(ReviewKind::UiUx),
+                ReviewKind::UiUx => Step::AddressReviews,
+            }),
             instruction: "Here is the change that you need to review",
         },
+        Step::AddressReviews => StepDef {
+            agent: Role::Developer,
+            session: Session::Resume,
+            reads: Reads::AllReviews,
+            writes: Artifact::Development,
+            next: Some(Step::OpenPullRequest),
+            instruction: "Here are the reviews that you need to work on together",
+        },
+        // Kept so task logs written before reviews were collected still replay.
         Step::DevelopReview(kind) => StepDef {
             agent: Role::Developer,
             session: Session::Resume,
-            reads: Some(Artifact::Review(kind)),
+            reads: Reads::One(Artifact::Review(kind)),
             writes: Artifact::Development,
             next: Some(match kind {
                 ReviewKind::Security => Step::Review(ReviewKind::Code),
@@ -114,15 +147,15 @@ pub(crate) fn def(step: Step) -> StepDef {
         Step::OpenPullRequest => StepDef {
             agent: Role::Developer,
             session: Session::Resume,
-            reads: None,
+            reads: Reads::None,
             writes: Artifact::Development,
             next: None,
-            instruction: "All changes are approved, you need to open a PR for",
+            instruction: "All reviews are addressed, mark the pull request ready for",
         },
         Step::DevelopPrFeedback => StepDef {
             agent: Role::Developer,
             session: Session::Resume,
-            reads: Some(Artifact::PrFeedback),
+            reads: Reads::One(Artifact::PrFeedback),
             writes: Artifact::Development,
             next: None,
             instruction: "Here is the PR feedback that you need to work on",
@@ -184,6 +217,8 @@ impl Artifact {
 }
 
 impl ReviewKind {
+    pub(crate) const ALL: [Self; 3] = [Self::Security, Self::Code, Self::UiUx];
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Security => "security",
@@ -197,7 +232,7 @@ impl Role {
     /// `OpenCode` agent id for this role.
     pub(crate) fn agent(self) -> &'static str {
         match self {
-            Self::SolutionArchitect => "solution-architect",
+            Self::Planner => "planner",
             Self::Developer => "developer",
             Self::Reviewer(ReviewKind::Security) => "reviewer-security",
             Self::Reviewer(ReviewKind::Code) => "reviewer-code",
@@ -222,6 +257,22 @@ mod tests {
             Step::DevelopReview(ReviewKind::Code)
         );
         assert_eq!(parse(r#""apply_pr_feedback""#), Step::DevelopPrFeedback);
+    }
+
+    #[test]
+    fn all_reviews_are_collected_before_the_developer_fixes_them() {
+        assert_eq!(
+            Step::route().collect::<Vec<_>>(),
+            vec![
+                Step::Plan,
+                Step::DevelopPlan,
+                Step::Review(ReviewKind::Security),
+                Step::Review(ReviewKind::Code),
+                Step::Review(ReviewKind::UiUx),
+                Step::AddressReviews,
+                Step::OpenPullRequest,
+            ]
+        );
     }
 
     #[test]

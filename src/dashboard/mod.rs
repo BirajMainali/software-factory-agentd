@@ -38,6 +38,7 @@ pub(crate) enum Error {
 }
 
 /// Facts about a task; the page decides how to word them.
+#[allow(clippy::struct_excessive_bools)] // independent facts the page renders separately
 #[derive(Serialize)]
 struct TaskView {
     issue: String,
@@ -57,6 +58,10 @@ struct TaskView {
     last_failure: Option<String>,
     /// Where the task's artifacts are, once a worker recorded it.
     work_path: Option<String>,
+    /// The task's pull request, once the supervisor found it.
+    pr: Option<String>,
+    /// The PR is merged or closed; the supervisor has exited.
+    pr_closed: bool,
     /// The task's own numbered artifacts, relative to `work_path`.
     documents: Vec<String>,
     since: u64,
@@ -182,6 +187,8 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
         retry_at: None,
         last_failure: None,
         work_path: None,
+        pr: None,
+        pr_closed: false,
         documents: Vec::new(),
         since: 0,
         updated: 0,
@@ -201,6 +208,8 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     view.retry_at = state.retry_at();
     view.last_failure = state.last_failure.as_deref().map(summary);
     view.work_path.clone_from(&state.work_path);
+    view.pr = state.pr().map(str::to_string);
+    view.pr_closed = state.pr_closed;
     view.documents = state
         .work_path
         .as_deref()

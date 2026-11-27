@@ -22,10 +22,14 @@ impl Worker<'_> {
             let pr = github::pr::for_issue(&self.issue)?
                 .ok_or_else(|| Error::NoPullRequest(self.issue.clone()))?;
             let snapshot = github::pr::fetch(&pr)?;
-            let read = prompts::file(&self.dir, Artifact::PrFeedback, slots.read);
+            let read = prompts::file(
+                &self.dir,
+                Artifact::PrFeedback,
+                slots.read(Artifact::PrFeedback),
+            );
             write_file(&read, &snapshot.markdown)?;
         }
-        let prompt = prompts::for_step(step, &self.issue, &self.dir, slots);
+        let prompt = prompts::for_step(step, &self.issue, &self.dir, &slots);
         let (session, after) = if let Some(turn) = open {
             let finished = self.opencode.last_run(&turn.session)? != turn.after;
             if !finished && !self.opencode.is_running(&turn.session)? {
@@ -119,7 +123,7 @@ impl Worker<'_> {
         Ok(())
     }
 
-    /// opencode wakes the main session whenever a sub-agent reports back; the runtime,
+    /// opencode wakes the main session whenever a sub-agent reports back; the supervisor,
     /// not main, decides the next step, so main is stopped.
     fn quiet_main(&self) -> Result<(), Error> {
         if let Some(main) = &self.state.main_session {

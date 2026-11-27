@@ -40,6 +40,14 @@ pub(crate) enum Event {
     WorkPath {
         path: String,
     },
+    /// The task's pull request, found after the route opens it. `key` is the
+    /// feedback fingerprint already present; `None` means it must be worked on.
+    PullRequestFound {
+        url: String,
+        key: Option<String>,
+    },
+    /// The PR was merged or closed; the task is terminal.
+    PullRequestClosed,
     /// The PR watch found feedback newer than `key`, which is the next numbered
     /// `pr-feedback` file for the developer to work on.
     PrFeedbackArrived {
