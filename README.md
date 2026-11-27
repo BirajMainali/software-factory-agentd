@@ -58,11 +58,12 @@ Requirements: Rust 1.89+, [GitHub CLI](https://cli.github.com) logged in
 
 ## Configure
 
-Both variables are required; there are no defaults.
+One variable is required; there is no default. Point it at the home repo. Agent
+sessions start there, so opencode resolves that repo's `@agent` names and config, and
+task state is kept there too.
 
 ```sh
-export PROJECT_PATH="$HOME/src/proj-a"   # the repo agents read, edit, and commit in
-export FACTORY_HOME="$HOME/agentd"       # where task state lives
+export HOME_REPO_PATH="$HOME/src/home-repo"   # home repo: session cwd and task state
 ```
 
 `work --path <dir>` names where that issue's artifacts go. Agentd creates
@@ -98,10 +99,10 @@ Artifacts for issue 12:
   pr-feedback/<n>-pr-feedback.md
 ```
 
-`FACTORY_HOME` holds only the task log and lock:
+`$HOME_REPO_PATH/tasks/` holds the task log and lock (keep it out of git):
 
 ```
-$FACTORY_HOME/tasks/<owner>/<repo>/<n>/
+$HOME_REPO_PATH/tasks/<owner>/<repo>/<n>/
   events.jsonl   append-only log; all state is replayed from it
   lock           held by the one supervisor
 ```

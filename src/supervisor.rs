@@ -46,7 +46,6 @@ enum Watch {
 pub(crate) fn supervise(issue: &str, path: &Path) -> Result<(), Error> {
     let url: GitHubUrl = issue.parse()?;
     url.expect_issue()?;
-    home::project_path()?;
     let home = home::home()?;
     let dir = home::task_dir(&home, &url);
     let _lock =

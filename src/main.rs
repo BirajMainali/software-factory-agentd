@@ -89,7 +89,6 @@ fn take_foreground(args: &[String]) -> (bool, Vec<String>) {
 fn submit(issue: &str, path: &str) -> Result<(), Box<dyn Error>> {
     let url: github::GitHubUrl = issue.parse()?;
     url.expect_issue()?;
-    home::project_path()?;
     let home = home::home()?;
     let dir = home::task_dir(&home, &url);
     // Fail here, not silently in a detached child, if the task is already running.

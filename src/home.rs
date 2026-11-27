@@ -1,4 +1,4 @@
-//! The factory home (`$FACTORY_HOME`): per-task event logs, locks, and workspaces.
+//! The home repo (`$HOME_REPO_PATH`): per-task event logs, locks, and workspaces.
 
 use crate::github::GitHubUrl;
 use std::env;
@@ -8,12 +8,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    #[error("set FACTORY_HOME to the factory home directory")]
+    #[error("set HOME_REPO_PATH to the home repo directory")]
     NoHome,
-    #[error("set PROJECT_PATH to the project directory agents work in")]
-    NoProject,
-    #[error("PROJECT_PATH is not a usable directory: {0}")]
-    InvalidProject(String),
+    #[error("HOME_REPO_PATH is not a usable directory: {0}")]
+    InvalidHome(String),
     #[error("cannot lock {path}: {source}")]
     Lock {
         path: PathBuf,
@@ -22,25 +20,18 @@ pub(crate) enum Error {
     },
 }
 
-/// The factory home, from `$FACTORY_HOME`. Required: no built-in default.
+/// The home repo, from `$HOME_REPO_PATH`. Required: no built-in default.
+/// Task state lives here, and it is the directory agent sessions run in, so
+/// opencode resolves this repo's agents and config.
 pub(crate) fn home() -> Result<PathBuf, Error> {
-    env::var_os("FACTORY_HOME")
+    let raw = env::var_os("HOME_REPO_PATH")
         .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .ok_or(Error::NoHome)
-}
-
-/// Where the main session and every agent session run, from `$PROJECT_PATH`.
-/// It is the project the agents read, edit, build, and commit in.
-pub(crate) fn project_path() -> Result<PathBuf, Error> {
-    let raw = env::var_os("PROJECT_PATH")
-        .filter(|dir| !dir.is_empty())
-        .ok_or(Error::NoProject)?;
+        .ok_or(Error::NoHome)?;
     let path = PathBuf::from(raw);
     fs::canonicalize(&path)
         .ok()
         .filter(|path| path.is_dir())
-        .ok_or_else(|| Error::InvalidProject(path.display().to_string()))
+        .ok_or_else(|| Error::InvalidHome(path.display().to_string()))
 }
 
 pub(crate) fn tasks_root(home: &Path) -> PathBuf {

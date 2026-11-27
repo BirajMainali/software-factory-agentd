@@ -11,7 +11,7 @@ Single binary crate. Entrypoint: `src/main.rs`. Modules live in feature folders:
 ```
 src/main.rs          CLI dispatch
 src/process.rs       child processes with timeouts
-src/home.rs          $FACTORY_HOME paths, file locks
+src/home.rs          $HOME_REPO_PATH paths, file locks
 src/github/          GitHub URL/client, issue/PR fetching
 src/opencode/        local opencode service API client (sessions, prompts, run outcomes)
 src/workflow/        route between steps (step.rs), event log + replay, task state
@@ -68,9 +68,9 @@ binary or crate appears. No CI yet.
 
 ## Commands
 
-`PROJECT_PATH` (the project sessions run in) and `FACTORY_HOME` (task state) must be
-set; no defaults. Artifact paths are not configured: `work --path` names them per
-issue.
+`HOME_REPO_PATH` points at the home repo; it is both the agent session cwd (so
+`@agent` names resolve) and the task-state root. Artifact paths are not configured:
+`work --path` names them per issue.
 
 ```sh
 cargo run -- fetch-issue <issue-url> <output-dir>   # writes <output-dir>/issue.md
@@ -91,7 +91,7 @@ prompts it, waits for the run to end, and prints `{"session":…,"outcome":…}`
 
 ## Workflow
 
-Per task under `$FACTORY_HOME`:
+Per task under `$HOME_REPO_PATH`:
 
 ```
 tasks/<owner>/<repo>/<n>/events.jsonl  append-only event log (JSON Lines)
@@ -136,7 +136,7 @@ theirs.
 Sessions: the worker drives the local opencode service API (the opencode app must be
 running; address and key from opencode's `service.json`, the key goes to `curl` via
 stdin, never argv or logs). One main session per task (titled
-`owner/repo#n <issue title>`, in `PROJECT_PATH`); each task runs in a sub-agent session
+`owner/repo#n <issue title>`, in `HOME_REPO_PATH`); each task runs in a sub-agent session
 the router creates under it (`parentID`, `agent`). opencode wakes main whenever a
 sub-agent reports back; the worker interrupts main.
 

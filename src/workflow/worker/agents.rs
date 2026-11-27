@@ -106,7 +106,7 @@ impl Worker<'_> {
         );
         let main = self.opencode.create_session(&NewSession {
             title: &title,
-            directory: Some(&self.project),
+            directory: Some(&self.session_dir),
             parent: None,
             agent: None,
         })?;

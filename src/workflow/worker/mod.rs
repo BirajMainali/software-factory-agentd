@@ -54,8 +54,8 @@ pub(crate) struct Worker<'a> {
     title: String,
     /// The exact folder the caller chose for artifacts.
     dir: PathBuf,
-    /// `$PROJECT_PATH`: the directory the main session and agents run in.
-    project: PathBuf,
+    /// `$HOME_REPO_PATH`: the directory the main session and agents run in.
+    session_dir: PathBuf,
     opencode: Client,
     log: &'a mut Log,
     state: TaskState,
@@ -110,7 +110,7 @@ impl Worker<'_> {
             path: dir.clone(),
             source,
         })?;
-        let project = home::project_path()?;
+        let session_dir = home::home()?;
         let opencode = Client::connect()?;
         let fetched = github::issue::fetch(&issue)?;
 
@@ -118,7 +118,7 @@ impl Worker<'_> {
             issue,
             title: fetched.title,
             dir,
-            project,
+            session_dir,
             opencode,
             log,
             state,
