@@ -54,6 +54,7 @@ pub(crate) fn run(repos: &[String]) -> Result<(), Error> {
     }
     let exe = env::current_exe().map_err(Error::CurrentExe)?;
     let home = home::home()?;
+    home::project_path()?;
     let mut running: BTreeMap<String, Running> = BTreeMap::new();
     let mut next_poll = Instant::now();
 
@@ -198,9 +199,11 @@ fn schedule(home: &Path, exe: &Path, issue: GitHubUrl, running: &mut BTreeMap<St
         }
     }
 
+    let path = home::workspace_dir(&dir);
     let spawned = Command::new(exe)
-        .arg("work")
-        .arg(&key)
+        .args(["work", "--issue", key.as_str(), "--path"])
+        .arg(path)
+        .arg("--foreground") // the scheduler tracks this process
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -40,17 +40,23 @@ Check with `agentd help`. Update by running the same command again.
 
 ## Configure
 
-Both variables are required; there are no defaults.
+Both variables are required; no defaults. `PROJECT_PATH` is the project the agents
+work in: the main session and every agent session run there. `FACTORY_HOME` holds
+task state only.
 
 | Variable | What | Example |
 |---|---|---|
-| `FACTORY_HOME` | Where agentd keeps task state and workspaces | `~/agentd` |
-| `FACTORY_DIR` | Folder in each workspace where agentd and agents exchange files. Relative path. | `factory` |
+| `PROJECT_PATH` | Project the agents read, edit, build, and commit in | `~/src/proj-a` |
+| `FACTORY_HOME` | Where agentd keeps task state | `~/agentd` |
 
 ```sh
+export PROJECT_PATH="$HOME/src/proj-a"
 export FACTORY_HOME="$HOME/agentd"
-export FACTORY_DIR=factory
 ```
+
+Artifacts are not configured here either. `agentd work --path <dir>` names the exact
+folder per issue, so several issues of one project share `PROJECT_PATH` without
+sharing artifacts.
 
 ### opencode access
 
@@ -68,9 +74,10 @@ opencode keeps its state elsewhere, point `XDG_STATE_HOME` at it.
 ### Agents
 
 agentd starts these opencode agents: `solution-architect`, `developer`,
-`reviewer-security`, `reviewer-code`, `reviewer-uiux`. Dummy versions for testing
-are in `test/agents/`; opencode only discovers agents under
-`~/.config/opencode/agents/`, so link them there:
+`reviewer-security`, `reviewer-code`, `reviewer-uiux`. They are global: install them
+once per machine, and every project uses them. Dummy versions for testing are in
+`test/agents/`; opencode only discovers agents under `~/.config/opencode/agents/`,
+so link them there:
 
 ```sh
 mkdir -p ~/.config/opencode/agents
@@ -80,7 +87,7 @@ ln -s "$PWD"/test/agents/*.md ~/.config/opencode/agents/
 ## Use
 
 ```sh
-agentd work https://github.com/<owner>/<repo>/issues/<n>   # route one issue (resumes)
+agentd work --issue <issue-url> --path <dir>               # start one issue in the background
 agentd run <owner>/<repo>...                               # route open `factory` issues
 agentd dashboard [127.0.0.1:7878]                          # live status page
 agentd fetch-issue <issue-url> <dir>                       # write <dir>/issue.md
@@ -88,14 +95,34 @@ agentd fetch-pr <pr-url> <dir>                             # write <dir>/pr-feed
 agentd spawn --prompt "..." [--session <id>] [--agent <id>] [--title <text>]
 ```
 
-`work` prints JSON lines and resumes from the task log, so a crashed or stopped
-worker picks up where it left off. `spawn` is a utility to prompt an opencode session
-directly.
+`work` starts a worker in the background and returns at once with
+`{"issue":…,"pid":…}`, so a script can submit thousands of issues in a loop. The
+sessions run in `PROJECT_PATH`. `--path` is a work root: agentd gives each issue its
+own `<root>/#<n>` folder, so one project can hold many issues without collisions.
+
+```sh
+agentd work --issue "https://github.com/o/r/issues/12" --path "$HOME/work/proj-a"
+# artifacts: $HOME/work/proj-a/#12/{issue.md,plan/,review/,development/,pr-feedback/}
+```
+
+It resumes from the task log, so a crashed or restarted worker picks up where it left
+off, and a failure is recorded in `events.jsonl` (`worker_failed`) and shown on the
+dashboard. Add `--foreground` to run the worker in the calling process instead of
+detaching it; the scheduler does.
+
+```sh
+for n in 1 2 3; do
+  agentd work --issue "https://github.com/o/r/issues/$n" --path "$HOME/work/r"
+done
+```
+
+`spawn` is a utility to prompt an opencode session directly.
 
 ## How a task runs
 
 Steps run in this order. `agentd run` picks open issues labelled `factory`; `agentd
-work` routes any issue.
+work` routes any issue into `<--path>/#<n>`. Sessions run in `PROJECT_PATH`; paths
+below are relative to that per-issue folder.
 
 | Step | Agent | Reads | Writes |
 |---|---|---|---|
@@ -120,20 +147,27 @@ work` routes any issue.
 
 ### Task state on disk
 
+`FACTORY_HOME` holds only the log, lock, and the default folder the scheduler gives a
+task:
+
 ```
 $FACTORY_HOME/tasks/<owner>/<repo>/<n>/
   events.jsonl        append-only task log; all state is replayed from it
   lock                held while one worker runs the task
-  workspace/          agents' working directory; they clone and branch here
-    $FACTORY_DIR/#<n>/
-      issue.md
-      plan/<n>-plan.md
-      review/<n>-<kind>.md
-      development/<n>-development.md
-      pr-feedback/<n>-pr-feedback.md
+  workspace/          path `agentd run` passes to `work` (a manual `work` names its own)
 ```
 
-To move everything, change `FACTORY_HOME`.
+Wherever the root is, each issue gets its own folder: `<--path>/#<n>/`, containing:
+
+```
+issue.md
+plan/<n>-plan.md
+review/<n>-<kind>.md
+development/<n>-development.md
+pr-feedback/<n>-pr-feedback.md
+```
+
+To move the state, change `FACTORY_HOME`. Artifacts move with the `--path` you pass.
 
 ### PR feedback
 
@@ -145,8 +179,14 @@ PRs are ignored; edited comment bodies are not noticed.
 ### Dashboard
 
 `agentd dashboard` serves a read-only page at `127.0.0.1:7878` (pass another address
-to change it) and streams each task's state over server-sent events. It shows
-status only: no agent output, feedback text, or repository content.
+to change it) and streams each task's state over server-sent events. Each row lists
+the task's own artifacts — `issue.md`, plans, reviews, development summaries, PR
+feedback — and every name links to that file's text at `/doc/…`.
+
+The doc endpoint serves only the closed set of artifact names above, from the work
+path recorded in the task log. Other files in that folder are listed nowhere and
+return 404, symlinks may not escape the folder, and a file over 2 MiB is refused.
+Nothing else from the repository is read.
 
 ## Development
 

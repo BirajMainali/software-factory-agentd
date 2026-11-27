@@ -43,15 +43,21 @@ pub(crate) enum Error {
         #[source]
         source: io::Error,
     },
+    #[error("cannot use {path} as the work folder: {source}")]
+    Folder {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 pub(crate) struct Worker<'a> {
     issue: GitHubUrl,
     title: String,
-    /// Directory the task's sessions run in; agents own its contents.
-    workspace: PathBuf,
-    /// `$FACTORY_DIR`: where, inside the workspace, the runtime and agents exchange files.
-    factory_dir: String,
+    /// The exact folder the caller chose for artifacts.
+    dir: PathBuf,
+    /// `$PROJECT_PATH`: the directory the main session and agents run in.
+    project: PathBuf,
     opencode: Client,
     log: &'a mut Log,
     state: TaskState,
@@ -59,8 +65,9 @@ pub(crate) struct Worker<'a> {
 
 impl Worker<'_> {
     /// Route the issue at `url` until its workflow ends, resuming from the
-    /// event log. Failures are recorded in the log before returning.
-    pub(crate) fn run(url: &str) -> Result<(), Error> {
+    /// event log. Artifacts go directly in `path`. Failures are recorded in the
+    /// log before returning.
+    pub(crate) fn run(url: &str, path: &Path) -> Result<(), Error> {
         let issue: GitHubUrl = url.parse()?;
         issue.expect_issue()?;
         let home = home::home()?;
@@ -69,8 +76,8 @@ impl Worker<'_> {
             return Err(Error::Busy(issue.to_string()));
         };
 
-        let path = home::events_path(&dir);
-        let mut state = TaskState::replay(&log::read(&path)?);
+        let events = home::events_path(&dir);
+        let mut state = TaskState::replay(&log::read(&events)?);
         emit(&json!({
             "event": "progress",
             "issue": issue.to_string(),
@@ -80,12 +87,12 @@ impl Worker<'_> {
         if state.is_finished() {
             return Ok(());
         }
-        let mut log = Log::open(&path)?;
+        let mut log = Log::open(&events)?;
         let started = log.append(Event::WorkerStarted)?;
         emit(&started);
         state.apply(&started);
 
-        let result = Self::drive(issue, &home, &mut log, state);
+        let result = Self::drive(issue, &mut log, state, path);
         if let Err(error) = &result {
             // The worker error is what matters; failing to log it must not hide it.
             if let Ok(failed) = log.append(Event::WorkerFailed {
@@ -97,17 +104,26 @@ impl Worker<'_> {
         result
     }
 
-    fn drive(issue: GitHubUrl, home: &Path, log: &mut Log, state: TaskState) -> Result<(), Error> {
-        let factory_dir = home::factory_dir()?;
+    fn drive(issue: GitHubUrl, log: &mut Log, state: TaskState, path: &Path) -> Result<(), Error> {
+        let dir = std::path::absolute(path).map_err(|source| Error::Folder {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        // The caller names the work root; this issue gets its own numbered folder.
+        let dir = dir.join(format!("#{}", issue.number));
+        fs::create_dir_all(&dir).map_err(|source| Error::Folder {
+            path: dir.clone(),
+            source,
+        })?;
+        let project = home::project_path()?;
         let opencode = Client::connect()?;
-        let workspace = home::workspace_dir(&home::task_dir(home, &issue));
         let fetched = github::issue::fetch(&issue)?;
 
         let mut worker = Worker {
             issue,
             title: fetched.title,
-            workspace,
-            factory_dir,
+            dir,
+            project,
             opencode,
             log,
             state,
@@ -117,9 +133,12 @@ impl Worker<'_> {
                 title: worker.title.clone(),
             })?;
         }
+        worker.record(Event::WorkPath {
+            path: worker.dir.display().to_string(),
+        })?;
         // The issue text is written once, so it needs no number.
-        let issue_file = prompts::path(&worker.factory_dir, &worker.issue, Artifact::Issue, 1);
-        write_file(&worker.workspace.join(issue_file), &fetched.markdown)?;
+        let issue_file = prompts::file(&worker.dir, Artifact::Issue, 1);
+        write_file(&issue_file, &fetched.markdown)?;
         worker.run_workflow()
     }
 
@@ -149,14 +168,12 @@ fn write_file(path: &Path, text: &str) -> Result<(), Error> {
     fs::write(path, text).map_err(write_error)
 }
 
-/// Create `file` under `dir` if missing and return its full path, so a prompt can
-/// name a file that is already there.
-fn create_file(dir: &Path, file: &str) -> Result<PathBuf, Error> {
-    let path = dir.join(file);
+/// Create `path` if missing, so a prompt can name a file that is already there.
+fn create_file(path: &Path) -> Result<(), Error> {
     if !path.exists() {
-        write_file(&path, "")?;
+        write_file(path, "")?;
     }
-    Ok(path)
+    Ok(())
 }
 
 /// One machine-readable progress line on stdout.
@@ -172,14 +189,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_file_makes_folders_returns_path_and_keeps_content() {
+    fn create_file_makes_folders_and_keeps_content() {
         let dir = std::env::temp_dir().join(format!("agentd-create-{}", std::process::id()));
-        let path = create_file(&dir, "#7/review/1-code.md").unwrap();
-        assert_eq!(path, dir.join("#7/review/1-code.md"));
+        let path = dir.join("review/1-code.md");
+        create_file(&path).unwrap();
+        assert!(path.exists());
         fs::write(&path, "the review").unwrap();
 
         // A crash-resumed run finds its own file instead of a blank one.
-        assert_eq!(create_file(&dir, "#7/review/1-code.md").unwrap(), path);
+        create_file(&path).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "the review");
         let _ = fs::remove_dir_all(&dir);
     }

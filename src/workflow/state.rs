@@ -31,6 +31,8 @@ pub(crate) struct TaskState {
     /// Latest sub-agent session per role; continued by steps that resume a role.
     pub(crate) children: BTreeMap<Role, String>,
     pub(crate) turn: Option<OpenTurn>,
+    /// The folder the last worker wrote artifacts to.
+    pub(crate) work_path: Option<String>,
     /// Sub-agent created for a step but not yet prompted.
     pub(crate) pending_child: Option<(Step, String)>,
     /// Times each artifact was written; the next run uses `runs + 1`.
@@ -95,6 +97,7 @@ impl TaskState {
                 self.failures = 0;
                 self.last_failure = None;
             }
+            Event::WorkPath { path } => self.work_path = Some(path.clone()),
             Event::PrFeedbackArrived { number, key } => {
                 self.runs.insert(Artifact::PrFeedback, *number);
                 self.feedback_key = Some(key.clone());

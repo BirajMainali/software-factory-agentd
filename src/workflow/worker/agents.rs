@@ -15,27 +15,17 @@ impl Worker<'_> {
         let resumed = open.is_some();
         let slots = self.state.slots(step, resumed);
         // The agent dumps into this file, so it exists before the prompt.
-        let write = prompts::path(
-            &self.factory_dir,
-            &self.issue,
-            def(step).writes,
-            slots.write,
-        );
-        create_file(&self.workspace, &write)?;
+        let write = prompts::file(&self.dir, def(step).writes, slots.write);
+        create_file(&write)?;
         if step == Step::DevelopPrFeedback {
             // The watch recorded new feedback: put this round in the file we point at.
             let pr = github::pr::for_issue(&self.issue)?
                 .ok_or_else(|| Error::NoPullRequest(self.issue.clone()))?;
             let snapshot = github::pr::fetch(&pr)?;
-            let read = prompts::path(
-                &self.factory_dir,
-                &self.issue,
-                Artifact::PrFeedback,
-                slots.read,
-            );
-            write_file(&self.workspace.join(read), &snapshot.markdown)?;
+            let read = prompts::file(&self.dir, Artifact::PrFeedback, slots.read);
+            write_file(&read, &snapshot.markdown)?;
         }
-        let prompt = prompts::for_step(step, &self.issue, &self.factory_dir, slots);
+        let prompt = prompts::for_step(step, &self.issue, &self.dir, slots);
         let (session, after) = if let Some(turn) = open {
             let finished = self.opencode.last_run(&turn.session)? != turn.after;
             if !finished && !self.opencode.is_running(&turn.session)? {
@@ -112,7 +102,7 @@ impl Worker<'_> {
         );
         let main = self.opencode.create_session(&NewSession {
             title: &title,
-            directory: Some(&self.workspace),
+            directory: Some(&self.project),
             parent: None,
             agent: None,
         })?;

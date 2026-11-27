@@ -39,6 +39,9 @@
   .pipeline.backing_off span.now { background: var(--warn); }
   .title { margin-left: .5rem; }
   .stage { font-size: .8125rem; color: var(--muted); margin-top: 2px; }
+  .files { display: flex; flex-wrap: wrap; gap: .125rem .75rem; font-size: .8125rem; max-width: 22rem; }
+  .files a { color: var(--accent); text-decoration: none; }
+  .files a:hover { text-decoration: underline; }
   .bad { color: var(--bad); }
   .warn { color: var(--warn); }
   .you { color: var(--accent); font-weight: 600; }
@@ -54,7 +57,7 @@
 
 <table>
   <thead>
-    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>For</th></tr>
+    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>Files</th><th>For</th></tr>
   </thead>
   <tbody id="tasks"></tbody>
 </table>
@@ -143,6 +146,28 @@
     return [`${task.agent} ${task.running ? "working" : "next"}`, ""];
   }
 
+  /** The task's own artifacts, newest numbering first in each folder. */
+  function files(task) {
+    if (!task.documents || task.documents.length === 0) {
+      const none = document.createElement("span");
+      none.className = "muted";
+      none.textContent = "—";
+      return none;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "files";
+    for (const doc of task.documents) {
+      const link = document.createElement("a");
+      link.href = `/doc/${task.repo}/${task.number}/${doc}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = doc.split("/").pop();
+      link.title = task.work_path ? `${task.work_path}/${doc}` : doc;
+      wrap.append(link);
+    }
+    return wrap;
+  }
+
   function renderTable() {
     tbody.replaceChildren();
     document.getElementById("empty").hidden = tasks.length > 0;
@@ -160,6 +185,7 @@
       const [text, tone] = now(task);
       const state = cell(row, text, tone);
       if (task.last_failure) state.title = task.last_failure;
+      cell(row, files(task));
       cell(row, ago(task.since), "num");
     }
   }

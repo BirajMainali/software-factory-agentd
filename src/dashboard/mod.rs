@@ -1,6 +1,7 @@
 //! Read-only dashboard. Replays every task log into its derived state and streams it
 //! to browsers over server-sent events. Owns no state and writes nothing.
-//! Shows status only: no agent output, feedback text, or repository content.
+//! Shows task status and the task's own numbered artifacts; no other repository
+//! content.
 
 use crate::github::GitHubUrl;
 use crate::home;
@@ -22,6 +23,7 @@ const MAX_REQUEST_LINE: u64 = 8 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const REFRESH: Duration = Duration::from_secs(2);
 const MAX_REASON: usize = 200;
+const MAX_DOC_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -53,6 +55,10 @@ struct TaskView {
     stuck: bool,
     retry_at: Option<u64>,
     last_failure: Option<String>,
+    /// Where the task's artifacts are, once a worker recorded it.
+    work_path: Option<String>,
+    /// The task's own numbered artifacts, relative to `work_path`.
+    documents: Vec<String>,
     since: u64,
     updated: u64,
 }
@@ -111,6 +117,7 @@ fn handle(mut stream: TcpStream, home: &Path) -> io::Result<()> {
         "/" => respond(&mut stream, "200 OK", "text/html; charset=utf-8", INDEX),
         "/state" => respond_json(&mut stream, &snapshot(home)),
         "/events" => stream_events(&mut stream, home),
+        doc if doc.starts_with("/doc/") => serve_document(&mut stream, home, &doc[5..]),
         _ => respond(&mut stream, "404 Not Found", "text/plain", "not found"),
     }
 }
@@ -174,6 +181,8 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
         stuck: false,
         retry_at: None,
         last_failure: None,
+        work_path: None,
+        documents: Vec::new(),
         since: 0,
         updated: 0,
     };
@@ -191,6 +200,12 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     view.stuck = state.is_stuck();
     view.retry_at = state.retry_at();
     view.last_failure = state.last_failure.as_deref().map(summary);
+    view.work_path.clone_from(&state.work_path);
+    view.documents = state
+        .work_path
+        .as_deref()
+        .map(|dir| documents(Path::new(dir)))
+        .unwrap_or_default();
     view.since = state.step_since;
     view.updated = state.updated;
     view
@@ -249,4 +264,147 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
         .collect()
+}
+
+/// The task's own numbered artifacts under `dir`, in step order.
+fn documents(dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    if dir.join("issue.md").is_file() {
+        names.push("issue.md".to_string());
+    }
+    for folder in ["plan", "review", "development", "pr-feedback"] {
+        let mut found: Vec<String> = fs::read_dir(dir.join(folder))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().is_file())
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| is_document(&format!("{folder}/{name}")))
+                    .collect()
+            })
+            .unwrap_or_default();
+        found.sort_by_key(|name| number_of(name));
+        names.extend(found.into_iter().map(|name| format!("{folder}/{name}")));
+    }
+    names
+}
+
+/// Only the artifacts agentd names can be read; nothing else in the folder.
+fn is_document(name: &str) -> bool {
+    let Some((folder, file)) = name.split_once('/') else {
+        return name == "issue.md";
+    };
+    let Some((number, rest)) = file.split_once('-') else {
+        return false;
+    };
+    !number.is_empty()
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && match folder {
+            "plan" => rest == "plan.md",
+            "development" => rest == "development.md",
+            "pr-feedback" => rest == "pr-feedback.md",
+            "review" => matches!(rest, "security.md" | "code.md" | "uiux.md"),
+            _ => false,
+        }
+}
+
+fn number_of(name: &str) -> u32 {
+    name.split_once('-')
+        .and_then(|(number, _)| number.parse().ok())
+        .unwrap_or(u32::MAX)
+}
+
+/// Serve one of the task's artifacts as plain text.
+fn serve_document(stream: &mut TcpStream, home: &Path, rest: &str) -> io::Result<()> {
+    let not_found =
+        |stream: &mut TcpStream| respond(stream, "404 Not Found", "text/plain", "not found");
+    let Some((issue, name)) = split_document(rest) else {
+        return not_found(stream);
+    };
+    let task = home::task_dir(home, &issue);
+    let Ok(records) = workflow::read_log(&home::events_path(&task)) else {
+        return not_found(stream);
+    };
+    let Some(work_path) = TaskState::replay(&records).work_path else {
+        return not_found(stream);
+    };
+    let Ok(root) = fs::canonicalize(&work_path) else {
+        return not_found(stream);
+    };
+    let Ok(path) = fs::canonicalize(root.join(&name)) else {
+        return not_found(stream);
+    };
+    // Belt and braces: a symlink inside the work path must not escape it.
+    if !path.starts_with(&root) || !path.is_file() {
+        return not_found(stream);
+    }
+    match fs::metadata(&path) {
+        Ok(meta) if meta.len() <= MAX_DOC_BYTES => {}
+        Ok(_) => return respond(stream, "413 Content Too Large", "text/plain", "too large"),
+        Err(_) => return not_found(stream),
+    }
+    match fs::read_to_string(&path) {
+        Ok(text) => respond(stream, "200 OK", "text/plain; charset=utf-8", &text),
+        Err(_) => not_found(stream),
+    }
+}
+
+/// `/doc/<owner>/<repo>/<n>/issue.md` or `/doc/<owner>/<repo>/<n>/<folder>/<file>`.
+fn split_document(rest: &str) -> Option<(GitHubUrl, String)> {
+    let parts: Vec<&str> = rest.split('/').collect();
+    let (owner, repo, number, name) = match parts.as_slice() {
+        [owner, repo, number, file] => (*owner, *repo, *number, (*file).to_string()),
+        [owner, repo, number, folder, file] => (*owner, *repo, *number, format!("{folder}/{file}")),
+        _ => return None,
+    };
+    let issue: GitHubUrl = format!("https://github.com/{owner}/{repo}/issues/{number}")
+        .parse()
+        .ok()?;
+    is_document(&name).then_some((issue, name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_agentd_artifacts_are_readable() {
+        for name in [
+            "issue.md",
+            "plan/1-plan.md",
+            "review/2-code.md",
+            "review/3-uiux.md",
+            "development/4-development.md",
+            "pr-feedback/5-pr-feedback.md",
+        ] {
+            assert!(is_document(name), "{name}");
+        }
+        for name in [
+            "notes.md",
+            "plan/notes.md",
+            "plan/1-plan.md.bak",
+            ".git/config",
+            "review/1-code.txt",
+            "../issue.md",
+            "issue.md/1-plan.md",
+        ] {
+            assert!(!is_document(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn documents_are_listed_in_order_without_extra_files() {
+        let dir = std::env::temp_dir().join(format!("agentd-docs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("plan")).unwrap();
+        fs::write(dir.join("issue.md"), "issue").unwrap();
+        fs::write(dir.join("plan/2-plan.md"), "two").unwrap();
+        fs::write(dir.join("plan/10-plan.md"), "ten").unwrap();
+        fs::write(dir.join("plan/notes.md"), "skip").unwrap();
+        assert_eq!(
+            documents(&dir),
+            ["issue.md", "plan/2-plan.md", "plan/10-plan.md"]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

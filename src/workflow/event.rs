@@ -36,6 +36,10 @@ pub(crate) enum Event {
     StepCompleted {
         step: Step,
     },
+    /// The folder this worker writes artifacts to, recorded when it starts.
+    WorkPath {
+        path: String,
+    },
     /// The PR watch found feedback newer than `key`, which is the next numbered
     /// `pr-feedback` file for the developer to work on.
     PrFeedbackArrived {

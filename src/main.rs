@@ -10,14 +10,15 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::Write as _;
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 
 const DEFAULT_DASHBOARD_ADDR: &str = "127.0.0.1:7878";
+const FOREGROUND: &str = "--foreground";
 const USAGE: &str = "usage:
+  agentd work --issue <issue-url> --path <dir>
   agentd fetch-issue <issue-url> <output-dir>
   agentd fetch-pr <pr-url> <output-dir>
   agentd spawn --prompt <text> [--session <id>] [--agent <id>] [--title <text>]
-  agentd work <issue-url>
   agentd run <owner/repo>...
   agentd dashboard [<addr>]   (default 127.0.0.1:7878)";
 
@@ -38,8 +39,8 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             github::issue::fetch_issue(url, Path::new(dir))?;
         }
         [command, url, dir] if command == "fetch-pr" => github::pr::fetch_pr(url, Path::new(dir))?,
+        [command, rest @ ..] if command == "work" => work(rest)?,
         [command, rest @ ..] if command == "spawn" => spawn(rest)?,
-        [command, url] if command == "work" => workflow::Worker::run(url)?,
         [command, repos @ ..] if command == "run" => runtime::run(repos)?,
         [command, addr @ ..] if command == "dashboard" && addr.len() <= 1 => {
             let addr = addr.first().map_or(DEFAULT_DASHBOARD_ADDR, String::as_str);
@@ -50,6 +51,65 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         _ => return Err(format!("unknown command\n{USAGE}").into()),
     }
+    Ok(())
+}
+
+/// Route one issue into `--path`. Starts the worker in the background and returns
+/// its pid, so a loop can submit many issues at once. `--foreground` (used by the
+/// scheduler) runs it in this process instead.
+fn work(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let (foreground, args) = take_foreground(args);
+    let mut flags = parse_flags(&args)?;
+    let issue = flags.remove("issue").ok_or("missing --issue")?;
+    let path = flags.remove("path").ok_or("missing --path")?;
+    if let Some(name) = flags.keys().next() {
+        return Err(format!("unknown flag --{name}").into());
+    }
+    if foreground {
+        workflow::Worker::run(&issue, Path::new(&path))?;
+    } else {
+        submit(&issue, &path)?;
+    }
+    Ok(())
+}
+
+/// Split the bare `--foreground` switch from the `--name value` flags.
+fn take_foreground(args: &[String]) -> (bool, Vec<String>) {
+    let mut foreground = false;
+    let mut flags = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg.as_str() == FOREGROUND {
+            foreground = true;
+        } else {
+            flags.push(arg.clone());
+        }
+    }
+    (foreground, flags)
+}
+
+/// Start the worker in a child process and return at once.
+fn submit(issue: &str, path: &str) -> Result<(), Box<dyn Error>> {
+    let url: github::GitHubUrl = issue.parse()?;
+    url.expect_issue()?;
+    home::project_path()?;
+    let home = home::home()?;
+    let dir = home::task_dir(&home, &url);
+    // Fail here, not silently in a detached child, if the task is already running.
+    if home::try_lock(&home::task_lock_path(&dir))?.is_none() {
+        return Err(format!("another worker is already running {issue}").into());
+    }
+
+    let child = Command::new(std::env::current_exe()?)
+        .args(["work", "--issue", issue, "--path", path, FOREGROUND])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _ = writeln!(
+        std::io::stdout(),
+        "{}",
+        serde_json::json!({ "issue": issue, "pid": child.id() })
+    );
     Ok(())
 }
 
@@ -104,4 +164,19 @@ fn parse_flags(args: &[String]) -> Result<BTreeMap<&str, String>, String> {
         }
     }
     Ok(flags)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_foreground;
+
+    #[test]
+    fn foreground_switch_is_stripped_from_the_flags() {
+        let args: Vec<String> = ["--issue", "u", "--foreground", "--path", "/x"]
+            .map(String::from)
+            .to_vec();
+        let (foreground, flags) = take_foreground(&args);
+        assert!(foreground);
+        assert_eq!(flags, ["--issue", "u", "--path", "/x"].map(String::from));
+    }
 }

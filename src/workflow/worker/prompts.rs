@@ -1,18 +1,20 @@
 //! What the router sends agents: one sentence, the file to read, the file to write.
-//! Paths are relative to the workspace under `$FACTORY_DIR`. How to do the work is
-//! the agent's.
+//! Paths are absolute, inside the `--path` folder the caller chose. How to do the
+//! work is the agent's.
 
 use crate::github::GitHubUrl;
 use crate::workflow::step::{Artifact, Slots, Step, def};
+use std::path::{Path, PathBuf};
 
-pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &str, slots: Slots) -> String {
+/// The prompt for one step.
+pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: Slots) -> String {
     let def = def(step);
     let mut lines = vec![format!("{}: {issue}", def.instruction)];
     if let Some(read) = def.reads {
         lines.push(format!(
             "{}: {}",
             read.label(),
-            path(dir, issue, read, slots.read)
+            file(dir, read, slots.read).display()
         ));
     }
     if let Step::Review(kind) = step {
@@ -27,15 +29,14 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &str, slots: Slots) -
     lines.push(format!(
         "Write your {} to this file: {}",
         def.writes.write_label(),
-        path(dir, issue, def.writes, slots.write)
+        file(dir, def.writes, slots.write).display()
     ));
     lines.join("\n")
 }
 
-/// One numbered file under the issue folder, relative to the workspace:
-/// `<$FACTORY_DIR>/#<number>/<artifact>`.
-pub(super) fn path(dir: &str, issue: &GitHubUrl, artifact: Artifact, n: u32) -> String {
-    format!("{dir}/#{}/{}", issue.number, artifact.file(n))
+/// One numbered artifact, directly inside the path the caller gave.
+pub(super) fn file(dir: &Path, artifact: Artifact, n: u32) -> PathBuf {
+    dir.join(artifact.file(n))
 }
 
 #[cfg(test)]
@@ -56,26 +57,22 @@ mod tests {
     #[test]
     fn plans_and_reviews_are_numbered_per_run() {
         let issue = issue(7);
-        let plan = for_step(Step::Plan, &issue, "factory", slots(1, 2));
-        assert!(plan.contains("factory/#7/issue.md"));
-        assert!(plan.ends_with("factory/#7/plan/2-plan.md"));
+        let dir = Path::new("/work");
+        let plan = for_step(Step::Plan, &issue, dir, slots(1, 2));
+        assert!(plan.contains("/work/issue.md"));
+        assert!(plan.ends_with("/work/plan/2-plan.md"));
 
-        let review = for_step(
-            Step::Review(ReviewKind::Code),
-            &issue,
-            "factory",
-            slots(1, 3),
-        );
+        let review = for_step(Step::Review(ReviewKind::Code), &issue, dir, slots(1, 3));
         assert!(review.contains("Review: code"));
-        assert!(review.ends_with("factory/#7/review/3-code.md"));
+        assert!(review.ends_with("/work/review/3-code.md"));
     }
 
     #[test]
-    fn every_step_names_a_file_in_the_issue_folder() {
+    fn every_step_names_a_file_in_the_given_path() {
         // DevelopPrFeedback is not in route(): the PR watch selects it.
         for step in Step::route().chain(Some(Step::DevelopPrFeedback)) {
-            let prompt = for_step(step, &issue(7), "factory", slots(1, 1));
-            assert!(prompt.contains("factory/#7/"), "{step:?}: {prompt}");
+            let prompt = for_step(step, &issue(7), Path::new("/work"), slots(1, 1));
+            assert!(prompt.contains("/work/"), "{step:?}: {prompt}");
         }
     }
 
@@ -84,18 +81,23 @@ mod tests {
         let develop = for_step(
             Step::DevelopReview(ReviewKind::Code),
             &issue(7),
-            "factory",
+            Path::new("/work"),
             slots(2, 3),
         );
-        assert!(develop.contains("Review (code): factory/#7/review/2-code.md"));
-        assert!(develop.ends_with("factory/#7/development/3-development.md"));
+        assert!(develop.contains("Review (code): /work/review/2-code.md"));
+        assert!(develop.ends_with("/work/development/3-development.md"));
     }
 
     #[test]
     fn pr_feedback_round_names_the_feedback_and_summary_files() {
-        let prompt = for_step(Step::DevelopPrFeedback, &issue(7), "factory", slots(2, 6));
-        assert!(prompt.contains("PR feedback: factory/#7/pr-feedback/2-pr-feedback.md"));
-        assert!(prompt.ends_with("factory/#7/development/6-development.md"));
+        let prompt = for_step(
+            Step::DevelopPrFeedback,
+            &issue(7),
+            Path::new("/work"),
+            slots(2, 6),
+        );
+        assert!(prompt.contains("PR feedback: /work/pr-feedback/2-pr-feedback.md"));
+        assert!(prompt.ends_with("/work/development/6-development.md"));
     }
 
     #[test]
@@ -107,8 +109,8 @@ mod tests {
         ];
         for step in steps {
             assert!(
-                for_step(step, &issue(7), "factory", slots(1, 4))
-                    .ends_with("factory/#7/development/4-development.md"),
+                for_step(step, &issue(7), Path::new("/work"), slots(1, 4))
+                    .ends_with("/work/development/4-development.md"),
                 "{step:?}"
             );
         }

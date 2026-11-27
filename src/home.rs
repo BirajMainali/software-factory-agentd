@@ -4,16 +4,16 @@ use crate::github::GitHubUrl;
 use std::env;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("set FACTORY_HOME to the factory home directory")]
     NoHome,
-    #[error("set FACTORY_DIR to the folder name agents and the runtime share in a workspace")]
-    NoFactoryDir,
-    #[error("FACTORY_DIR must be a relative path inside the workspace, got {0:?}")]
-    InvalidFactoryDir(String),
+    #[error("set PROJECT_PATH to the project directory agents work in")]
+    NoProject,
+    #[error("PROJECT_PATH is not a usable directory: {0}")]
+    InvalidProject(String),
     #[error("cannot lock {path}: {source}")]
     Lock {
         path: PathBuf,
@@ -28,6 +28,19 @@ pub(crate) fn home() -> Result<PathBuf, Error> {
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
         .ok_or(Error::NoHome)
+}
+
+/// Where the main session and every agent session run, from `$PROJECT_PATH`.
+/// It is the project the agents read, edit, build, and commit in.
+pub(crate) fn project_path() -> Result<PathBuf, Error> {
+    let raw = env::var_os("PROJECT_PATH")
+        .filter(|dir| !dir.is_empty())
+        .ok_or(Error::NoProject)?;
+    let path = PathBuf::from(raw);
+    fs::canonicalize(&path)
+        .ok()
+        .filter(|path| path.is_dir())
+        .ok_or_else(|| Error::InvalidProject(path.display().to_string()))
 }
 
 pub(crate) fn tasks_root(home: &Path) -> PathBuf {
@@ -46,23 +59,8 @@ pub(crate) fn task_lock_path(task_dir: &Path) -> PathBuf {
     task_dir.join("lock")
 }
 
-/// Folder inside each workspace where the runtime and agents exchange files (issue
-/// text, plan, report), from `$FACTORY_DIR`. Required: no built-in default. Must be a
-/// relative path inside the workspace.
-pub(crate) fn factory_dir() -> Result<String, Error> {
-    let name = env::var("FACTORY_DIR").map_err(|_| Error::NoFactoryDir)?;
-    let inside_workspace = !name.is_empty()
-        && Path::new(&name)
-            .components()
-            .all(|part| matches!(part, Component::Normal(_)));
-    if inside_workspace {
-        Ok(name)
-    } else {
-        Err(Error::InvalidFactoryDir(name))
-    }
-}
-
-/// The directory a task's agent sessions run in. Agents own everything in it.
+/// The directory a task's agent sessions run in, when the runtime schedules it.
+/// A manual `work` names its own path. Agents own everything in it.
 pub(crate) fn workspace_dir(task_dir: &Path) -> PathBuf {
     task_dir.join("workspace")
 }
