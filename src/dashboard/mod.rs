@@ -184,7 +184,9 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     };
     let state = TaskState::replay(&records);
     view.unreadable = false;
-    view.title = state.title.clone();
+    view.title.clone_from(&state.title);
+    // PR feedback rounds repeat after the route is done; count one more step then.
+    view.steps += usize::from(state.current() == Some(Step::DevelopPrFeedback));
     view.step = state.current().map_or(view.steps, |step| {
         Step::route().take_while(|done| *done != step).count()
     });

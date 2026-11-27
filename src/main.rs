@@ -65,17 +65,16 @@ fn spawn(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     let client = opencode::Client::connect()?;
-    let session = match session {
-        Some(session) => session,
-        None => {
-            let directory = std::env::current_dir()?;
-            client.create_session(&opencode::NewSession {
-                title: title.as_deref().unwrap_or("spawn"),
-                directory: Some(&directory),
-                parent: None,
-                agent: agent.as_deref(),
-            })?
-        }
+    let session = if let Some(session) = session {
+        session
+    } else {
+        let directory = std::env::current_dir()?;
+        client.create_session(&opencode::NewSession {
+            title: title.as_deref().unwrap_or("spawn"),
+            directory: Some(&directory),
+            parent: None,
+            agent: agent.as_deref(),
+        })?
     };
     let after = client.last_run(&session)?;
     client.prompt(&session, &prompt)?;

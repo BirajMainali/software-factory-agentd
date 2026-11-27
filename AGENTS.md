@@ -25,6 +25,8 @@ binary or crate appears. No CI yet.
 
 ## Architecture
 
+- The route is one table (`def` in `workflow/step.rs`): agent, session, artifact
+  read, artifact written, next step. Routing reads the table; a new step is one row.
 - Runtime: schedules tasks, owns lifecycle, persists events, recovers after crashes.
 - Workers: independent processes; each routes one task through AI agents (currently
   OpenCode) and records events.
@@ -36,7 +38,8 @@ binary or crate appears. No CI yet.
 ## Invariants
 
 - Router, not controller: agents own all git and GitHub work (clone, branch, commit,
-  push, PR, merge). The runtime never inspects or changes it.
+  push, PR, merge). The runtime only reads GitHub (issues, PR feedback) to decide what
+  to route; it never changes repository state.
 - One worker per task; it holds the task lock.
 - The event log is the durable record; state is derived. Restart/replay must rebuild it
   without duplicating side effects.
@@ -68,7 +71,7 @@ workspace where the runtime and agents exchange files) must be set; no defaults.
 
 ```sh
 cargo run -- fetch-issue <issue-url> <output-dir>   # writes <output-dir>/issue.md
-cargo run -- fetch-pr <pr-url> <output-dir>         # writes <output-dir>/pr.md
+cargo run -- fetch-pr <pr-url> <output-dir>         # writes <output-dir>/pr-feedback/<n>-pr-feedback.md
 cargo run -- work <issue-url>                       # route one task until done (resumes)
 cargo run -- run <owner/repo>...                    # schedule workers for labelled issues
 cargo run -- dashboard [<addr>]                     # default 127.0.0.1:7878
@@ -88,7 +91,11 @@ Per task under `$FACTORY_HOME`:
 tasks/<owner>/<repo>/<n>/events.jsonl  append-only event log (JSON Lines)
 tasks/<owner>/<repo>/<n>/lock          held by the task's one worker
 tasks/<owner>/<repo>/<n>/workspace/    sessions' working directory; agents own it
-  $FACTORY_DIR/issue.md                issue text, written by the worker at start
+  $FACTORY_DIR/#<number>/issue.md                         issue text, written at start
+  $FACTORY_DIR/#<number>/plan/<n>-plan.md                 the plan; each run writes the next number
+  $FACTORY_DIR/#<number>/review/<n>-<kind>.md             one file per review run, numbered
+  $FACTORY_DIR/#<number>/development/<n>-development.md   the development summary, one per developer run
+  $FACTORY_DIR/#<number>/pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per round the watch finds
 ```
 
 All task state is derived by replaying `events.jsonl` through `TaskState::apply`;
@@ -98,16 +105,18 @@ The route is fixed: `Step::next` in `workflow/step.rs` says which step runs afte
 which, and agents never choose what runs next:
 
 ```
-plan → develop → security review → developer → code review → developer → ui/ux review → developer → open PR → awaiting human
+plan → develop → security review → developer → code review → developer → ui/ux review → developer → open PR
+  → await PR feedback → developer → await PR feedback → …
 ```
 
 | Task | Agent | Session | Prompt (paths under `$FACTORY_DIR`) |
 |---|---|---|---|
 | plan | solution-architect | new | issue, issue text, where to write the plan |
 | develop | developer | new | issue, plan |
-| review (×3) | reviewer-security / -code / -uiux | new | issue, which review, where to write it |
-| apply review (×3) | developer | resumes developer | the finished review file |
+| review (×3) | reviewer-security / -code / -uiux | new | issue, which review, the numbered file to write it to |
+| develop (×3) | developer | resumes developer | the finished review file |
 | open PR | developer | resumes developer | all changes approved: open the PR |
+| develop (PR feedback) | developer | resumes developer | the numbered `pr-feedback` file, and where to write the development summary |
 
 A task is done when opencode reports its run `succeeded`; `failed` or `interrupted`
 fails the worker, and the runtime retries. What agents write and how they work is
@@ -121,8 +130,11 @@ the router creates under it (`parentID`, `agent`). opencode wakes main whenever 
 sub-agent reports back; the worker interrupts main.
 
 The runtime picks open issues labelled `factory`, runs at most 4 workers, and retries a
-failed worker up to 3 times with doubling backoff. The human step after `open PR` is
-not built yet.
+failed worker up to 3 times with doubling backoff. Each poll it also watches the PR of
+every task that is waiting after its route: the PR is found through the issue's
+timeline, and when a review or comment is newer than the last one recorded
+(`PrFeedbackArrived`), the worker resumes the developer on the next
+`pr-feedback/<n>-pr-feedback.md`.
 
 Dummy agents for each role live in `test/agents/`. OpenCode only discovers agents
 from `~/.config/opencode/agents/` (or its config), so link them there to test.

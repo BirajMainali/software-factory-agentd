@@ -2,15 +2,19 @@
 
 use crate::github::{
     Error, GitHubUrl, Label, User, author_login, gh_json, label_names, push_verbatim,
-    write_markdown,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::cmp::Ordering;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::fs;
+use std::io;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
-const PR_FILE: &str = "pr.md";
+const PR_FEEDBACK_DIR: &str = "pr-feedback";
+/// Every fetch writes the next numbered file, so earlier feedback is kept.
+const PR_FEEDBACK_SUFFIX: &str = "-pr-feedback.md";
 
 #[derive(Debug, Deserialize)]
 struct PullRequest {
@@ -64,7 +68,7 @@ struct IssueComment {
     created_at: String,
 }
 
-/// Fetch `url` with `gh` and write `<dir>/pr.md`.
+/// Fetch `url` with `gh` and write the next `<dir>/pr-feedback/<n>-pr-feedback.md`.
 ///
 /// # Errors
 ///
@@ -72,7 +76,77 @@ struct IssueComment {
 /// fails, its JSON cannot be parsed, or the output cannot be written.
 pub(crate) fn fetch_pr(url: &str, dir: &Path) -> Result<(), Error> {
     let pr_ref: GitHubUrl = url.parse()?;
-    write_markdown(dir, PR_FILE, &fetch(&pr_ref)?)
+    let snapshot = fetch(&pr_ref)?;
+    let path = write_next(&dir.join(PR_FEEDBACK_DIR), &snapshot.markdown)?;
+    // Status output; a closed pipe must not turn a successful write into a panic.
+    let _ = writeln!(std::io::stdout(), "wrote {}", path.display());
+    Ok(())
+}
+
+/// Write `markdown` to the next number, claiming it exclusively so two fetches
+/// racing for the same number can never overwrite one file.
+fn write_next(dir: &Path, markdown: &str) -> Result<PathBuf, Error> {
+    if let Err(source) = fs::create_dir_all(dir) {
+        return Err(Error::CreateDir {
+            path: dir.to_path_buf(),
+            source,
+        });
+    }
+    let mut n = next_number(dir)?;
+    loop {
+        let path = dir.join(format!("{n}{PR_FEEDBACK_SUFFIX}"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(markdown.as_bytes())
+                    .map_err(|source| Error::Write {
+                        path: path.clone(),
+                        source,
+                    })?;
+                return Ok(path);
+            }
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => n += 1,
+            Err(source) => return Err(Error::Write { path, source }),
+        }
+    }
+}
+
+/// One past the highest `<n>-pr-feedback.md` already in `dir`; 1 if there is none.
+fn next_number(dir: &Path) -> Result<u32, Error> {
+    let read_error = |source| Error::ReadDir {
+        path: dir.to_path_buf(),
+        source,
+    };
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(1),
+        Err(source) => return Err(read_error(source)),
+    };
+    let mut highest = 0;
+    for entry in entries {
+        let name = entry.map_err(read_error)?.file_name();
+        let n = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(PR_FEEDBACK_SUFFIX))
+            .and_then(|n| n.parse().ok());
+        if let Some(n) = n {
+            highest = u32::max(highest, n);
+        }
+    }
+    Ok(highest + 1)
+}
+
+/// A pull request rendered as Markdown, plus a fingerprint that changes when a
+/// review or comment is added.
+#[derive(Debug)]
+pub(crate) struct Snapshot {
+    pub(crate) markdown: String,
+    pub(crate) key: String,
+    /// The PR is still open, so feedback can still be acted on.
+    pub(crate) open: bool,
 }
 
 /// Fetch a pull request with `gh` and render it as Markdown: body, reviews, inline
@@ -82,7 +156,7 @@ pub(crate) fn fetch_pr(url: &str, dir: &Path) -> Result<(), Error> {
 ///
 /// Returns an error if the reference is not a pull request, `gh` fails, or its JSON
 /// is invalid.
-pub(crate) fn fetch(pr_ref: &GitHubUrl) -> Result<String, Error> {
+pub(crate) fn fetch(pr_ref: &GitHubUrl) -> Result<Snapshot, Error> {
     pr_ref.expect_pull()?;
     let pr: PullRequest = gh_json(
         "api",
@@ -97,6 +171,41 @@ pub(crate) fn fetch(pr_ref: &GitHubUrl) -> Result<String, Error> {
     let comments: Vec<IssueComment> =
         fetch_pages(pr_ref, &format!("issues/{}/comments", pr_ref.number))?;
     Ok(render_pr(&pr, &reviews, &review_comments, &comments))
+}
+
+/// The newest pull request that cross-references `issue`, if any.
+///
+/// # Errors
+///
+/// Returns an error if `gh` fails or its JSON is invalid.
+pub(crate) fn for_issue(issue: &GitHubUrl) -> Result<Option<GitHubUrl>, Error> {
+    let path = issue.repo_path(&format!("issues/{}/timeline", issue.number));
+    let pages: Vec<Vec<TimelineEvent>> = gh_json("api", &["api", "--paginate", "--slurp", &path])?;
+    Ok(pages
+        .into_iter()
+        .flatten()
+        .filter_map(|event| event.source)
+        .filter(|source| source.issue.pull_request.is_some())
+        .map(|source| source.issue.html_url)
+        .next_back()
+        .and_then(|url| url.parse().ok()))
+}
+
+#[derive(Debug, Deserialize)]
+struct TimelineEvent {
+    source: Option<CrossReference>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CrossReference {
+    issue: LinkedIssue,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinkedIssue {
+    html_url: String,
+    #[serde(default)]
+    pull_request: Option<serde_json::Value>,
 }
 
 fn fetch_pages<T: DeserializeOwned>(pr_ref: &GitHubUrl, endpoint: &str) -> Result<Vec<T>, Error> {
@@ -126,7 +235,7 @@ fn render_pr(
     reviews: &[Review],
     review_comments: &[ReviewComment],
     comments: &[IssueComment],
-) -> String {
+) -> Snapshot {
     let mut feedback = Vec::with_capacity(reviews.len() + review_comments.len() + comments.len());
     feedback.extend(reviews.iter().map(Feedback::Review));
     feedback.extend(review_comments.iter().map(Feedback::ReviewComment));
@@ -234,7 +343,24 @@ fn render_pr(
         }
     }
 
-    out
+    Snapshot {
+        key: feedback_key(&feedback),
+        markdown: out,
+        open: pr.state == "open",
+    }
+}
+
+/// Changes when a review or comment is added: how many there are, and when the
+/// latest one was submitted.
+// shortcut: edited bodies keep the same count and timestamp, so they do not wake
+// the developer; watch bodies too if that must route back.
+fn feedback_key(feedback: &[Feedback<'_>]) -> String {
+    let latest = feedback
+        .iter()
+        .rev()
+        .find_map(|item| item.timestamp())
+        .unwrap_or("");
+    format!("{}:{latest}", feedback.len())
 }
 
 fn review_location(comment: &ReviewComment) -> String {
@@ -248,5 +374,60 @@ fn push_body(out: &mut String, body: Option<&str>) {
     match body {
         Some(body) if !body.trim().is_empty() => push_verbatim(out, body),
         _ => out.push_str("_(no body)_\n"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pr_feedback_is_numbered_per_fetch() {
+        let dir = std::env::temp_dir().join(format!("agentd-pr-feedback-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(next_number(&dir).unwrap(), 1);
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("1-pr-feedback.md"), "one").unwrap();
+        fs::write(dir.join("3-pr-feedback.md"), "three").unwrap();
+        fs::write(dir.join("notes.md"), "not feedback").unwrap();
+        assert_eq!(next_number(&dir).unwrap(), 4);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn feedback_key_changes_when_feedback_arrives() {
+        let review = Review {
+            user: None,
+            body: None,
+            state: "APPROVED".to_string(),
+            submitted_at: Some("2026-01-01T00:00:00Z".to_string()),
+            commit_id: None,
+        };
+        assert_ne!(
+            feedback_key(&[]),
+            feedback_key(&[Feedback::Review(&review)])
+        );
+        assert_eq!(
+            feedback_key(&[Feedback::Review(&review)]),
+            feedback_key(&[Feedback::Review(&review)])
+        );
+    }
+
+    #[test]
+    fn each_fetch_keeps_the_previous_file() {
+        let dir = std::env::temp_dir().join(format!("agentd-pr-write-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_next(&dir, "first").unwrap();
+        write_next(&dir, "second").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("1-pr-feedback.md")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("2-pr-feedback.md")).unwrap(),
+            "second"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

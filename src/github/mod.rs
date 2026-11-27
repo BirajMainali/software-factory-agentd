@@ -47,6 +47,12 @@ pub(crate) enum Error {
         #[source]
         source: std::io::Error,
     },
+    #[error("cannot read {path}: {source}")]
+    ReadDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("cannot write {path}: {source}")]
     Write {
         path: PathBuf,

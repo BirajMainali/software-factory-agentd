@@ -2,7 +2,7 @@
 //! events through [`TaskState::apply`], so a restart rebuilds exactly this state.
 
 use super::event::{Event, Record};
-use super::step::{Role, Step};
+use super::step::{Artifact, Role, Slots, Step, def};
 use crate::opencode::Outcome;
 use std::collections::BTreeMap;
 
@@ -35,6 +35,10 @@ pub(crate) struct TaskState {
     pub(crate) turn: Option<OpenTurn>,
     /// Sub-agent created for a step but not yet prompted.
     pub(crate) pending_child: Option<(Step, String)>,
+    /// Times each artifact was written; the next run uses `runs + 1`.
+    runs: BTreeMap<Artifact, u32>,
+    /// Fingerprint of the PR feedback already recorded, so the watch does not repeat it.
+    feedback_key: Option<String>,
     /// Failed worker exits since the last progress.
     pub(crate) failures: u32,
     pub(crate) last_failure_at: u64,
@@ -72,6 +76,7 @@ impl TaskState {
                 after,
             } => {
                 self.pending_child = None;
+                *self.runs.entry(def(*step).writes).or_default() += 1;
                 self.turn = Some(OpenTurn {
                     step: *step,
                     session: session.clone(),
@@ -92,6 +97,13 @@ impl TaskState {
                 self.step_since = record.ts;
                 self.failures = 0;
                 self.last_failure = None;
+            }
+            Event::PrFeedbackArrived { number, key } => {
+                self.runs.insert(Artifact::PrFeedback, *number);
+                self.feedback_key = Some(key.clone());
+                self.step = Step::DevelopPrFeedback;
+                self.finished = false;
+                self.step_since = record.ts;
             }
             Event::WorkerFailed { reason } => self.last_failure = Some(reason.clone()),
             Event::WorkerExited { code } => {
@@ -116,6 +128,31 @@ impl TaskState {
             .collect()
     }
 
+    /// The numbered files `step` uses: the previous stage it reads and the one it
+    /// writes. A resumed turn keeps the numbers it already has.
+    pub(crate) fn slots(&self, step: Step, resumed: bool) -> Slots {
+        let def = def(step);
+        let runs = |artifact| self.runs.get(&artifact).copied().unwrap_or(0);
+        Slots {
+            write: if resumed {
+                runs(def.writes).max(1)
+            } else {
+                runs(def.writes) + 1
+            },
+            read: def.reads.map_or(1, |artifact| runs(artifact).max(1)),
+        }
+    }
+
+    /// The numbered `pr-feedback` file the next round of feedback goes to.
+    pub(crate) fn next_pr_feedback(&self) -> u32 {
+        self.runs.get(&Artifact::PrFeedback).copied().unwrap_or(0) + 1
+    }
+
+    /// Fingerprint of the feedback already recorded; the watch skips a match.
+    pub(crate) fn feedback_key(&self) -> Option<&str> {
+        self.feedback_key.as_deref()
+    }
+
     pub(crate) fn is_finished(&self) -> bool {
         self.finished
     }
@@ -135,5 +172,117 @@ impl TaskState {
             self.last_failure_at
                 .saturating_add(RETRY_BACKOFF_SECS.saturating_mul(factor)),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::step::ReviewKind;
+
+    fn prompt(state: &mut TaskState, step: Step) {
+        state.apply(&Record {
+            ts: 0,
+            event: Event::TurnStarted {
+                step,
+                session: "s".to_string(),
+                after: None,
+            },
+        });
+    }
+
+    #[test]
+    fn plans_and_reviews_number_each_run() {
+        let mut state = TaskState::default();
+        assert_eq!(state.slots(Step::Plan, false).write, 1);
+        prompt(&mut state, Step::Plan);
+        assert_eq!(state.slots(Step::DevelopPlan, false).read, 1);
+        assert_eq!(state.slots(Step::Plan, false).write, 2);
+
+        let code = Step::Review(ReviewKind::Code);
+        prompt(&mut state, code);
+        assert_eq!(
+            state
+                .slots(Step::DevelopReview(ReviewKind::Code), false)
+                .read,
+            1
+        );
+        prompt(&mut state, code);
+        assert_eq!(
+            state
+                .slots(Step::DevelopReview(ReviewKind::Code), false)
+                .read,
+            2
+        );
+        assert_eq!(state.slots(code, false).write, 3);
+        assert_eq!(state.slots(code, true).write, 2);
+    }
+
+    #[test]
+    fn pr_feedback_wakes_the_task_and_numbers_each_round() {
+        let mut state = TaskState::default();
+        state.apply(&Record {
+            ts: 1,
+            event: Event::StepCompleted {
+                step: Step::OpenPullRequest,
+            },
+        });
+        assert!(state.is_finished());
+
+        let arrived = |number, key: &str| Record {
+            ts: 2,
+            event: Event::PrFeedbackArrived {
+                number,
+                key: key.to_string(),
+            },
+        };
+        state.apply(&arrived(1, "1:2026-01-01T00:00:00Z"));
+        assert_eq!(state.current(), Some(Step::DevelopPrFeedback));
+        assert_eq!(state.slots(Step::DevelopPrFeedback, false).read, 1);
+        assert_eq!(state.next_pr_feedback(), 2);
+        assert_eq!(state.feedback_key(), Some("1:2026-01-01T00:00:00Z"));
+
+        state.apply(&Record {
+            ts: 3,
+            event: Event::StepCompleted {
+                step: Step::DevelopPrFeedback,
+            },
+        });
+        assert!(state.is_finished());
+
+        state.apply(&arrived(2, "2:2026-01-02T00:00:00Z"));
+        assert_eq!(state.slots(Step::DevelopPrFeedback, false).read, 2);
+        assert_eq!(state.next_pr_feedback(), 3);
+    }
+
+    #[test]
+    fn every_developer_run_gets_its_own_summary_number() {
+        let mut state = TaskState::default();
+        assert_eq!(state.slots(Step::DevelopPlan, false).write, 1);
+        prompt(&mut state, Step::DevelopPlan);
+        assert_eq!(
+            state
+                .slots(Step::DevelopReview(ReviewKind::Security), false)
+                .write,
+            2
+        );
+        prompt(&mut state, Step::DevelopReview(ReviewKind::Security));
+        assert_eq!(
+            state
+                .slots(Step::DevelopReview(ReviewKind::Code), false)
+                .write,
+            3
+        );
+        prompt(&mut state, Step::DevelopReview(ReviewKind::Code));
+        assert_eq!(
+            state
+                .slots(Step::DevelopReview(ReviewKind::UiUx), false)
+                .write,
+            4
+        );
+        prompt(&mut state, Step::DevelopReview(ReviewKind::UiUx));
+        prompt(&mut state, Step::OpenPullRequest);
+        assert_eq!(state.slots(Step::DevelopPlan, false).write, 6);
+        assert_eq!(state.slots(Step::OpenPullRequest, true).write, 5);
     }
 }

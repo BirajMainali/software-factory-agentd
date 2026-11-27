@@ -2,8 +2,9 @@
 
 Routes a GitHub issue through AI agents in a fixed order:
 plan → develop → security / code / ui-ux review (each followed by the developer) →
-open PR → waiting for a human. Agents do the work; agentd only starts them, waits for
-opencode to report each run ended, and moves to the next step.
+open PR → watch the PR for new feedback (each round goes back to the developer).
+Agents do the work; agentd only starts them, waits for opencode to report each run
+ended, and moves to the next step.
 
 ## Requirements
 
@@ -52,7 +53,7 @@ $FACTORY_HOME/tasks/<owner>/<repo>/<number>/
   events.jsonl       task log (agentd's state)
   lock               held while a worker runs the task
   workspace/         agents' working directory; they clone and branch here
-    $FACTORY_DIR/    issue.md, plan.md, review-*.md
+    $FACTORY_DIR/    #<number>/{issue.md,plan/,review/,development/,pr-feedback/}
 ```
 
 To move everything, change `FACTORY_HOME`.
@@ -89,7 +90,7 @@ agentd work https://github.com/<owner>/<repo>/issues/<n>   # route one issue (re
 agentd run <owner>/<repo>...                               # route all open issues labelled `factory`
 agentd dashboard [127.0.0.1:7878]                          # live status page
 agentd fetch-issue <issue-url> <dir>                       # write <dir>/issue.md
-agentd fetch-pr <pr-url> <dir>                             # write <dir>/pr.md
+agentd fetch-pr <pr-url> <dir>                             # write <dir>/pr-feedback/<n>-pr-feedback.md
 agentd spawn --prompt "..." [--session <id>] [--agent <id>] [--title <text>]
 ```
 

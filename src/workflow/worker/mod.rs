@@ -35,6 +35,8 @@ pub(crate) enum Error {
     SubagentEnded { role: Role, outcome: Outcome },
     #[error("no session for agent {}", .0.agent())]
     NoSession(Role),
+    #[error("no pull request found for {0}")]
+    NoPullRequest(GitHubUrl),
     #[error("cannot write {path}: {source}")]
     Write {
         path: PathBuf,
@@ -115,7 +117,10 @@ impl Worker<'_> {
                 title: worker.title.clone(),
             })?;
         }
-        write_file(&worker.factory_file(prompts::ISSUE_FILE), &fetched.markdown)?;
+        let issue_dir = worker
+            .workspace
+            .join(prompts::issue_dir(&worker.factory_dir, &worker.issue));
+        write_file(&issue_dir.join(prompts::ISSUE_FILE), &fetched.markdown)?;
         worker.run_workflow()
     }
 
@@ -124,10 +129,6 @@ impl Worker<'_> {
             self.run_step(step)?;
         }
         Ok(())
-    }
-
-    fn factory_file(&self, name: &str) -> PathBuf {
-        self.workspace.join(&self.factory_dir).join(name)
     }
 
     fn record(&mut self, event: Event) -> Result<(), Error> {
@@ -149,10 +150,38 @@ fn write_file(path: &Path, text: &str) -> Result<(), Error> {
     fs::write(path, text).map_err(write_error)
 }
 
+/// Create `file` under `dir` if missing and return its full path, so a prompt can
+/// name a file that is already there.
+fn create_file(dir: &Path, file: &str) -> Result<PathBuf, Error> {
+    let path = dir.join(file);
+    if !path.exists() {
+        write_file(&path, "")?;
+    }
+    Ok(path)
+}
+
 /// One machine-readable progress line on stdout.
 fn emit(value: &impl Serialize) {
     if let Ok(line) = serde_json::to_string(value) {
         // A closed stdout must not stop the worker.
         let _ = writeln!(io::stdout(), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_file_makes_folders_returns_path_and_keeps_content() {
+        let dir = std::env::temp_dir().join(format!("agentd-create-{}", std::process::id()));
+        let path = create_file(&dir, "#7/review/1-code.md").unwrap();
+        assert_eq!(path, dir.join("#7/review/1-code.md"));
+        fs::write(&path, "the review").unwrap();
+
+        // A crash-resumed run finds its own file instead of a blank one.
+        assert_eq!(create_file(&dir, "#7/review/1-code.md").unwrap(), path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "the review");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

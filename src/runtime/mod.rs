@@ -66,10 +66,10 @@ pub(crate) fn run(repos: &[String]) -> Result<(), Error> {
                 match open_issues(repo) {
                     Ok(issues) => {
                         for issue in issues {
-                            if running.len() >= MAX_WORKERS {
-                                break;
+                            watch_feedback(&home, &issue);
+                            if running.len() < MAX_WORKERS {
+                                schedule(&home, &exe, issue, &mut running);
                             }
-                            schedule(&home, &exe, issue, &mut running);
                         }
                     }
                     Err(error) => emit(&json!({
@@ -110,6 +110,59 @@ fn open_issues(repo: &str) -> Result<Vec<GitHubUrl>, github::Error> {
         ],
     )?;
     issues.iter().map(|issue| issue.url.parse()).collect()
+}
+
+/// If `issue` is finished and its PR has feedback that was never applied, record
+/// it and let the next [`schedule`] run the developer on it. A task is finished
+/// when it waits after the PR opened, so this is the only thing that wakes it.
+fn watch_feedback(home: &Path, issue: &GitHubUrl) {
+    let dir = home::task_dir(home, issue);
+    let Ok(records) = workflow::read_log(&home::events_path(&dir)) else {
+        return;
+    };
+    let state = TaskState::replay(&records);
+    if !state.is_finished() {
+        return;
+    }
+    let Ok(Some(pr)) = github::pr::for_issue(issue) else {
+        return;
+    };
+    let Ok(snapshot) = github::pr::fetch(&pr) else {
+        return;
+    };
+    if !snapshot.open || state.feedback_key() == Some(snapshot.key.as_str()) {
+        return;
+    }
+
+    // A worker may have appended between the read and now; hold the task lock and
+    // replay again so the log this decision is based on cannot move.
+    let Ok(Some(_lock)) = home::try_lock(&home::task_lock_path(&dir)) else {
+        return;
+    };
+    let Ok(records) = workflow::read_log(&home::events_path(&dir)) else {
+        return;
+    };
+    let state = TaskState::replay(&records);
+    if !snapshot.open || !state.is_finished() || state.feedback_key() == Some(snapshot.key.as_str())
+    {
+        return;
+    }
+    let number = state.next_pr_feedback();
+    let key = snapshot.key;
+    match workflow::Log::open(&home::events_path(&dir))
+        .and_then(|mut log| log.append(Event::PrFeedbackArrived { number, key }))
+    {
+        Ok(_) => emit(&json!({
+            "event": "pr_feedback",
+            "issue": issue.to_string(),
+            "number": number,
+        })),
+        Err(error) => emit(&json!({
+            "event": "pr_feedback_failed",
+            "issue": issue.to_string(),
+            "reason": error.to_string(),
+        })),
+    }
 }
 
 /// Start a worker for `issue` unless it is running, done, out of retries, or backing off.
