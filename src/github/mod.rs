@@ -3,8 +3,7 @@
 pub(crate) mod issue;
 pub(crate) mod pr;
 
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
@@ -16,7 +15,6 @@ use std::time::Duration;
 
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Errors returned while resolving, fetching, or writing GitHub data.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error(
@@ -172,7 +170,6 @@ pub(crate) fn is_valid_name(part: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// Run `gh` with a non-interactive environment and return its stdout.
 pub(crate) fn gh(label: &'static str, args: &[&str]) -> Result<Vec<u8>, Error> {
     let mut command = Command::new("gh");
     command
@@ -191,7 +188,6 @@ pub(crate) fn gh(label: &'static str, args: &[&str]) -> Result<Vec<u8>, Error> {
     Ok(output.stdout.into_bytes())
 }
 
-/// Run `gh` and parse its stdout as JSON.
 pub(crate) fn gh_json<T: DeserializeOwned>(label: &'static str, args: &[&str]) -> Result<T, Error> {
     serde_json::from_slice(&gh(label, args)?).map_err(Error::GhJson)
 }
@@ -215,7 +211,6 @@ pub(crate) fn push_verbatim(out: &mut String, text: &str) {
     }
 }
 
-/// Create `dir` if needed and write `markdown` to `<dir>/<file_name>`.
 pub(crate) fn write_markdown(dir: &Path, file_name: &str, markdown: &str) -> Result<(), Error> {
     if let Err(source) = fs::create_dir_all(dir) {
         return Err(Error::CreateDir {

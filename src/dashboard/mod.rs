@@ -44,7 +44,6 @@ struct TaskView {
     title: Option<String>,
     /// The log could not be read; nothing else is known.
     unreadable: bool,
-    /// Steps done, out of `steps`.
     step: usize,
     steps: usize,
     /// Agent for the current step; `None` once agents are done.
@@ -58,7 +57,6 @@ struct TaskView {
     updated: u64,
 }
 
-/// Serve the dashboard on `addr` until the process is stopped.
 pub(crate) fn serve(addr: &str) -> Result<(), Error> {
     let home = home::home()?;
     let listener = TcpListener::bind(addr).map_err(|source| Error::Bind {
@@ -187,9 +185,7 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     view.title.clone_from(&state.title);
     // PR feedback rounds repeat after the route is done; count one more step then.
     view.steps += usize::from(state.current() == Some(Step::DevelopPrFeedback));
-    view.step = state.current().map_or(view.steps, |step| {
-        Step::route().take_while(|done| *done != step).count()
-    });
+    view.step = state.completed().len();
     view.agent = state.current().map(|step| step.role().agent());
     view.running = state.turn.is_some();
     view.stuck = state.is_stuck();
@@ -200,7 +196,7 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     view
 }
 
-/// `/tasks/<owner>/<repo>/<number>` → the issue, validated so it is safe as a path.
+/// `owner/repo/number` → the issue URL, validated so the parts are safe as paths.
 fn task_ref(rest: &str) -> Option<GitHubUrl> {
     let mut parts = rest.split('/');
     let (Some(owner), Some(repo), Some(number), None) =

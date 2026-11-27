@@ -9,7 +9,7 @@ mod prompts;
 use super::event::Event;
 use super::log::{self, Log};
 use super::state::TaskState;
-use super::step::Role;
+use super::step::{Artifact, Role};
 use crate::github::{self, GitHubUrl};
 use crate::home;
 use crate::opencode::{self, Client, Outcome};
@@ -117,10 +117,9 @@ impl Worker<'_> {
                 title: worker.title.clone(),
             })?;
         }
-        let issue_dir = worker
-            .workspace
-            .join(prompts::issue_dir(&worker.factory_dir, &worker.issue));
-        write_file(&issue_dir.join(prompts::ISSUE_FILE), &fetched.markdown)?;
+        // The issue text is written once, so it needs no number.
+        let issue_file = prompts::path(&worker.factory_dir, &worker.issue, Artifact::Issue, 1);
+        write_file(&worker.workspace.join(issue_file), &fetched.markdown)?;
         worker.run_workflow()
     }
 

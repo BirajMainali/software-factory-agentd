@@ -8,21 +8,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Step {
-    /// Every task starts here.
     #[default]
     Plan,
-    /// The developer implements the plan.
     #[serde(rename = "develop_plan", alias = "develop")]
     DevelopPlan,
-    /// A reviewer reviews the work and writes the review to a file.
     Review(ReviewKind),
-    /// The developer develops again, with the review as its input.
     #[serde(rename = "develop_review", alias = "apply_review")]
     DevelopReview(ReviewKind),
-    /// All reviews are done; the developer opens the pull request.
     OpenPullRequest,
-    /// The developer develops again, with the PR feedback as its input. The PR
-    /// keeps being watched, so this runs once per round of feedback.
+    /// Selected by the PR watch, once per round of new feedback.
     #[serde(rename = "develop_pr_feedback", alias = "apply_pr_feedback")]
     DevelopPrFeedback,
 }
@@ -61,7 +55,6 @@ pub(crate) enum Session {
     Resume,
 }
 
-/// Everything routing needs to know about one step.
 pub(crate) struct StepDef {
     pub(crate) agent: Role,
     pub(crate) session: Session,
@@ -143,13 +136,10 @@ impl Step {
         def(self).next
     }
 
-    /// The role that does this step.
     pub(crate) fn role(self) -> Role {
         def(self).agent
     }
 
-    /// Whether the step starts a fresh agent session; otherwise it continues the
-    /// role's existing one.
     pub(crate) fn starts_session(self) -> bool {
         matches!(def(self).session, Session::Fresh)
     }
@@ -182,9 +172,7 @@ impl Artifact {
             Self::PrFeedback => "PR feedback".to_string(),
         }
     }
-}
 
-impl Artifact {
     /// What the prompt calls the file the agent writes.
     pub(crate) fn write_label(self) -> &'static str {
         match self {

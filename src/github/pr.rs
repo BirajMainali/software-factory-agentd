@@ -3,8 +3,7 @@
 use crate::github::{
     Error, GitHubUrl, Label, User, author_login, gh_json, label_names, push_verbatim,
 };
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 use std::cmp::Ordering;
 use std::fmt::Write as _;
 use std::fs;
@@ -270,17 +269,12 @@ fn render_pr(
     let _ = writeln!(out, "- Updated: {}", pr.updated_at);
 
     // Sorted ascending, so the last item carrying a timestamp is the latest.
-    let latest = feedback
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, item)| item.timestamp().is_some());
-    if let Some((index, item)) = latest {
+    if let Some(index) = feedback.iter().rposition(|item| item.timestamp().is_some()) {
         let _ = writeln!(
             out,
             "- Latest feedback: #{} at {}",
             index + 1,
-            item.timestamp().unwrap_or("")
+            feedback[index].timestamp().unwrap_or("")
         );
     }
 

@@ -38,7 +38,6 @@ pub(crate) enum Error {
     RunTimedOut(String),
 }
 
-/// How a session's run ended, as opencode records it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Outcome {
@@ -47,7 +46,6 @@ pub(crate) enum Outcome {
     Interrupted,
 }
 
-/// A session to create.
 pub(crate) struct NewSession<'a> {
     pub(crate) title: &'a str,
     /// Working directory; a child inherits its parent's.
@@ -84,7 +82,6 @@ struct IdleMessage {
 }
 
 impl Client {
-    /// Connect to the running opencode service.
     pub(crate) fn connect() -> Result<Self, Error> {
         let path = service_file();
         let service_error = |reason: String| Error::Service {
@@ -111,20 +108,17 @@ impl Client {
         Ok(created.data.id)
     }
 
-    /// Start a run of `session` with `text` as its input.
     pub(crate) fn prompt(&self, session: &str, text: &str) -> Result<(), Error> {
         let path = format!("/api/session/{session}/prompt");
         self.call("POST", &path, Some(&json!({ "text": text })))?;
         Ok(())
     }
 
-    /// Stop the session's run, if it is running.
     pub(crate) fn interrupt(&self, session: &str) -> Result<(), Error> {
         self.call("POST", &format!("/api/session/{session}/interrupt"), None)?;
         Ok(())
     }
 
-    /// Id of the session's latest finished run, if any.
     pub(crate) fn last_run(&self, session: &str) -> Result<Option<String>, Error> {
         Ok(self.latest_idle(session)?.map(|idle| idle.id))
     }
@@ -150,7 +144,6 @@ impl Client {
         }
     }
 
-    /// Whether the session's agent is running now.
     pub(crate) fn is_running(&self, session: &str) -> Result<bool, Error> {
         let active: Data<serde_json::Map<String, Value>> =
             self.call_json("GET", "/api/session/active", None)?;
@@ -183,17 +176,18 @@ impl Client {
         body: Option<&Value>,
     ) -> Result<String, Error> {
         let mut command = Command::new("curl");
-        command
-            .args([
-                "--silent",
-                "--show-error",
-                "--config",
-                "-",
-                "--request",
-                method,
-            ])
-            .args(["--header", "Content-Type: application/json"])
-            .args(["--write-out", "\n%{http_code}"]);
+        command.args([
+            "--silent",
+            "--show-error",
+            "--config",
+            "-",
+            "--request",
+            method,
+            "--header",
+            "Content-Type: application/json",
+            "--write-out",
+            "\n%{http_code}",
+        ]);
         if let Some(body) = body {
             command.arg("--data-binary").arg(body.to_string());
         }

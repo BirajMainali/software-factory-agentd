@@ -13,11 +13,9 @@ pub(crate) enum Event {
     IssueFetched {
         title: String,
     },
-    /// The task's main opencode session.
     SessionOpened {
         session: String,
     },
-    /// The router created step `step`'s sub-agent session under the main session.
     SubagentStarted {
         step: Step,
         session: String,
@@ -30,7 +28,6 @@ pub(crate) enum Event {
         session: String,
         after: Option<String>,
     },
-    /// opencode reported step `step`'s run ended.
     SubagentFinished {
         step: Step,
         outcome: Outcome,
@@ -48,7 +45,6 @@ pub(crate) enum Event {
     WorkerFailed {
         reason: String,
     },
-    /// The runtime saw the worker process exit.
     WorkerExited {
         code: Option<i32>,
     },

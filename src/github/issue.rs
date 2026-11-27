@@ -35,7 +35,6 @@ struct Comment {
     created_at: String,
 }
 
-/// A fetched issue: its title and the rendered Markdown.
 pub(crate) struct FetchedIssue {
     pub(crate) title: String,
     pub(crate) markdown: String,

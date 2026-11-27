@@ -5,9 +5,6 @@
 use crate::github::GitHubUrl;
 use crate::workflow::step::{Artifact, Slots, Step, def};
 
-pub(super) const ISSUE_FILE: &str = "issue.md";
-
-/// The prompt for one step: what it reads, where it writes.
 pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &str, slots: Slots) -> String {
     let def = def(step);
     let mut lines = vec![format!("{}: {issue}", def.instruction)];
@@ -35,14 +32,10 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &str, slots: Slots) -
     lines.join("\n")
 }
 
-/// Where agents dump everything for this issue: `<$FACTORY_DIR>/#<number>/`.
-pub(super) fn issue_dir(dir: &str, issue: &GitHubUrl) -> String {
-    format!("{dir}/#{}", issue.number)
-}
-
-/// One numbered file, relative to the workspace.
+/// One numbered file under the issue folder, relative to the workspace:
+/// `<$FACTORY_DIR>/#<number>/<artifact>`.
 pub(super) fn path(dir: &str, issue: &GitHubUrl, artifact: Artifact, n: u32) -> String {
-    format!("{}/{}", issue_dir(dir, issue), artifact.file(n))
+    format!("{dir}/#{}/{}", issue.number, artifact.file(n))
 }
 
 #[cfg(test)]

@@ -22,13 +22,11 @@ pub(crate) struct OpenTurn {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TaskState {
-    /// The issue's title, once fetched.
     pub(crate) title: Option<String>,
     /// The step to run next, unless `finished`.
     pub(crate) step: Step,
     /// Agents are done; the task waits for a human.
     pub(crate) finished: bool,
-    /// The task's main opencode session.
     pub(crate) main_session: Option<String>,
     /// Latest sub-agent session per role; continued by steps that resume a role.
     pub(crate) children: BTreeMap<Role, String>,
@@ -43,7 +41,6 @@ pub(crate) struct TaskState {
     pub(crate) failures: u32,
     pub(crate) last_failure_at: u64,
     pub(crate) last_failure: Option<String>,
-    /// When the current step began.
     pub(crate) step_since: u64,
     pub(crate) updated: u64,
 }
@@ -115,7 +112,6 @@ impl TaskState {
         }
     }
 
-    /// The step to run next; `None` once agents are done.
     pub(crate) fn current(&self) -> Option<Step> {
         (!self.finished).then_some(self.step)
     }
@@ -132,23 +128,27 @@ impl TaskState {
     /// writes. A resumed turn keeps the numbers it already has.
     pub(crate) fn slots(&self, step: Step, resumed: bool) -> Slots {
         let def = def(step);
-        let runs = |artifact| self.runs.get(&artifact).copied().unwrap_or(0);
         Slots {
             write: if resumed {
-                runs(def.writes).max(1)
+                self.run_count(def.writes).max(1)
             } else {
-                runs(def.writes) + 1
+                self.run_count(def.writes) + 1
             },
-            read: def.reads.map_or(1, |artifact| runs(artifact).max(1)),
+            read: def
+                .reads
+                .map_or(1, |artifact| self.run_count(artifact).max(1)),
         }
     }
 
     /// The numbered `pr-feedback` file the next round of feedback goes to.
     pub(crate) fn next_pr_feedback(&self) -> u32 {
-        self.runs.get(&Artifact::PrFeedback).copied().unwrap_or(0) + 1
+        self.run_count(Artifact::PrFeedback) + 1
     }
 
-    /// Fingerprint of the feedback already recorded; the watch skips a match.
+    fn run_count(&self, artifact: Artifact) -> u32 {
+        self.runs.get(&artifact).copied().unwrap_or(0)
+    }
+
     pub(crate) fn feedback_key(&self) -> Option<&str> {
         self.feedback_key.as_deref()
     }

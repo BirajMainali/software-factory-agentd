@@ -45,7 +45,6 @@ struct Running {
     child: Child,
 }
 
-/// Schedule workers for `repos` until the process is stopped.
 pub(crate) fn run(repos: &[String]) -> Result<(), Error> {
     if repos.is_empty() {
         return Err(Error::NoRepos);
@@ -112,6 +111,11 @@ fn open_issues(repo: &str) -> Result<Vec<GitHubUrl>, github::Error> {
     issues.iter().map(|issue| issue.url.parse()).collect()
 }
 
+/// New feedback on an open PR that this task has not seen yet.
+fn new_feedback(state: &TaskState, snapshot: &github::pr::Snapshot) -> bool {
+    snapshot.open && state.feedback_key() != Some(snapshot.key.as_str())
+}
+
 /// If `issue` is finished and its PR has feedback that was never applied, record
 /// it and let the next [`schedule`] run the developer on it. A task is finished
 /// when it waits after the PR opened, so this is the only thing that wakes it.
@@ -130,7 +134,7 @@ fn watch_feedback(home: &Path, issue: &GitHubUrl) {
     let Ok(snapshot) = github::pr::fetch(&pr) else {
         return;
     };
-    if !snapshot.open || state.feedback_key() == Some(snapshot.key.as_str()) {
+    if !new_feedback(&state, &snapshot) {
         return;
     }
 
@@ -143,8 +147,7 @@ fn watch_feedback(home: &Path, issue: &GitHubUrl) {
         return;
     };
     let state = TaskState::replay(&records);
-    if !snapshot.open || !state.is_finished() || state.feedback_key() == Some(snapshot.key.as_str())
-    {
+    if !state.is_finished() || !new_feedback(&state, &snapshot) {
         return;
     }
     let number = state.next_pr_feedback();

@@ -67,7 +67,6 @@ pub(crate) fn workspace_dir(task_dir: &Path) -> PathBuf {
     task_dir.join("workspace")
 }
 
-/// The task's append-only event log.
 pub(crate) fn events_path(task_dir: &Path) -> PathBuf {
     task_dir.join("events.jsonl")
 }

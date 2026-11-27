@@ -47,7 +47,6 @@ impl Output {
     }
 }
 
-/// Run `command` to completion within `timeout`.
 pub(crate) fn run(command: &mut Command, timeout: Duration) -> Result<Output, Error> {
     run_with_input(command, "", timeout)
 }

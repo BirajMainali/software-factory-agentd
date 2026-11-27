@@ -5,13 +5,12 @@ use super::{Error, Worker, create_file, prompts, write_file};
 use crate::github;
 use crate::opencode::{NewSession, Outcome};
 use crate::workflow::event::Event;
-use crate::workflow::step::{Artifact, Role, Step, def};
+use crate::workflow::step::{Artifact, Step, def};
 
 impl Worker<'_> {
     /// Run `step`'s agent to completion. A step cut off by a crash is picked up
     /// again: its run finished, still running, or never sent.
     pub(super) fn run_step(&mut self, step: Step) -> Result<(), Error> {
-        let role = step.role();
         let open = self.state.turn.clone().filter(|turn| turn.step == step);
         let resumed = open.is_some();
         let slots = self.state.slots(step, resumed);
@@ -44,7 +43,7 @@ impl Worker<'_> {
             }
             (turn.session, turn.after)
         } else {
-            let session = self.session_for(step, role)?;
+            let session = self.session_for(step)?;
             let after = self.opencode.last_run(&session)?;
             self.record(Event::TurnStarted {
                 step,
@@ -60,12 +59,15 @@ impl Worker<'_> {
         self.record(Event::SubagentFinished { step, outcome })?;
         match outcome {
             Outcome::Succeeded => self.record(Event::StepCompleted { step }),
-            Outcome::Failed | Outcome::Interrupted => Err(Error::SubagentEnded { role, outcome }),
+            Outcome::Failed | Outcome::Interrupted => Err(Error::SubagentEnded {
+                role: step.role(),
+                outcome,
+            }),
         }
     }
 
-    /// The session a step runs in: a new sub-agent, or the role's existing one.
-    fn session_for(&mut self, step: Step, role: Role) -> Result<String, Error> {
+    fn session_for(&mut self, step: Step) -> Result<String, Error> {
+        let role = step.role();
         if !step.starts_session() {
             return self
                 .state
@@ -76,17 +78,18 @@ impl Worker<'_> {
         }
         match self.state.pending_child.clone() {
             Some((pending, session)) if pending == step => Ok(session),
-            _ => self.create_subagent(step, role),
+            _ => self.create_subagent(step),
         }
     }
 
-    fn create_subagent(&mut self, step: Step, role: Role) -> Result<String, Error> {
+    fn create_subagent(&mut self, step: Step) -> Result<String, Error> {
         let main = self.main_session()?;
+        let agent = step.role().agent();
         let child = self.opencode.create_session(&NewSession {
-            title: role.agent(),
+            title: agent,
             directory: None,
             parent: Some(&main),
-            agent: Some(role.agent()),
+            agent: Some(agent),
         })?;
         self.record(Event::SubagentStarted {
             step,
