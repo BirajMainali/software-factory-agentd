@@ -1,130 +1,150 @@
 # agentd
 
-Agentd owns one GitHub issue from submit to merged pull request. You tell it what to
-work on; it routes the issue through AI agents in a fixed order, watches the PR, and
-sends new review feedback back to the developer.
+Agentd drives one GitHub issue from submission to a merged pull request. It routes the
+issue through a fixed sequence of AI agents, records each step, watches the resulting
+PR, and sends new review feedback back to the developer.
 
-Agentd does not pick issues and does not read what agents write. It hands each agent
-the path to read and the path to write. Agents own the code, git, and GitHub.
+It is a router, not a controller. Agentd decides *which* agent runs next and *where* its
+input and output files live. It never edits code, touches git, or talks to GitHub beyond
+reading the issue and the PR. The agents do that work themselves.
 
-## Workflow
+## How it works
 
 ```
-                    agentd work --issue <url> --path <dir>
-                                     │
-                                     ▼
-   ┌─────────────────────────────────────────────────────────────┐
-   │ plan                                                        │
-   │ develop        implement, commit, push, open a draft PR     │
-   │ security       review the pushed branch                     │
-   │ code           review the pushed branch                     │
-   │ ui/ux          review the pushed branch                     │
-   │ developer      address all three reviews, push              │
-   │ developer      mark the PR ready                            │
-   └─────────────────────────────────────────────────────────────┘
-                                     │
-                                     ▼
-   ┌─────────────────────────────────────────────────────────────┐
-   │ watch the PR                                                │
-   │   new review/comment ──► developer fixes it ──► watch again │
-   │   merged or closed   ──► exit                                │
-   └─────────────────────────────────────────────────────────────┘
+work --issue <url> --path <dir>
+        │
+        ▼
+plan ─► develop (push, draft PR) ─► security ─► code ─► ui/ux
+                                                    │
+                              developer addresses all three reviews, pushes
+                                                    │
+                              developer marks the PR ready
+                                                    │
+                                                    ▼
+                              watch PR ─► new feedback ─► developer ─► watch PR
+                                       └─ merged/closed ─► exit
 ```
 
-One task is one supervisor process. It holds the task lock for the whole route and
-watch, so two `work` calls for the same issue never overlap. A failed agent run is
-retried with backoff; after three failures the task is left for a human.
+- **One task, one supervisor.** `work` starts a detached supervisor and returns
+  immediately. The supervisor holds the task lock for the whole route and watch, so two
+  runs for the same issue cannot overlap. `--foreground` keeps it in the current
+  process.
+- **Sessions.** Each task gets one main session titled `owner/repo#n <title>`. Every
+  step runs in a sub-agent session under it. The router always decides the next step;
+  the main session is stopped so opencode cannot advance the workflow on its own.
+- **Artifacts.** Each step receives the absolute paths to read and the absolute path to
+  write. Files are numbered per run and never overwritten, so a resumed task can see
+  what already happened.
+- **State.** Every step appends to `$HOME_REPO_PATH/tasks/<owner>/<repo>/<n>/events.jsonl`.
+  All state is replayed from that log, including after a crash. A run that was
+  interrupted picks up its own unfinished step instead of starting over.
+- **Failure handling.** A failed agent run is retried with backoff. After three
+  consecutive failures the task is left for a human; the supervisor stays alive and
+  keeps watching the PR.
+- **Completion.** The task is done when its PR merges or closes, not when code is
+  pushed. Until then it holds its lock and keeps watching.
+
+## Requirements
+
+- Rust 1.89 or newer (to build)
+- [GitHub CLI](https://cli.github.com), authenticated with `gh auth login`
+- The [opencode](https://opencode.ai) app running locally
+- `git` on `PATH`
 
 ## Install
 
 ```sh
-git clone https://github.com/BirajMainali/agentd && cd agentd
+git clone https://github.com/BirajMainali/software-factory-agentd && cd software-factory-agentd
 ./install.sh
 ```
 
-That runs `cargo install --path .` and puts `agentd` in `~/.cargo/bin`. Check with
-`agentd help`. To update, `git pull` and run it again.
+`install.sh` runs `cargo install --path . --locked`, putting `agentd` in
+`~/.cargo/bin`. Confirm with `agentd help`. To update, pull and run it again.
 
-For all users:
+To install for all users:
 
 ```sh
 cargo build --release
 sudo install -m 755 target/release/agentd /usr/local/bin/agentd
 ```
 
-Requirements: Rust 1.89+, [GitHub CLI](https://cli.github.com) logged in
-(`gh auth login`), the [opencode](https://opencode.ai) app running, and `git` on
-`PATH`.
-
 ## Configure
 
-One variable is required; there is no default. Point it at the home repo. Agent
-sessions start there, so opencode resolves that repo's `@agent` names and config, and
-task state is kept there too.
+One variable is required; there is no default, and the directory must exist.
 
 ```sh
-export HOME_REPO_PATH="$HOME/src/home-repo"   # home repo: session cwd and task state
+export HOME_REPO_PATH="$HOME/src/home-repo"
 ```
 
+Agent sessions start in that directory, so opencode resolves its agents and project
+instructions from there, and agentd keeps task state under
+`$HOME_REPO_PATH/tasks/`.
+
 `work --path <dir>` names where that issue's artifacts go. Agentd creates
-`<dir>/#<n>/` for issue `n`, so one `--path` can hold many issues.
+`<dir>/#<n>/` for issue `n`, so a single `--path` can hold many issues.
 
 Agentd reads the local opencode address and key from
-`~/.local/state/opencode/service.json`; you never pass them. Install the agents it
-starts (`planner`, `developer`, `reviewer-security`, `reviewer-code`, `reviewer-uiux`)
-under `~/.config/opencode/agents/`. Dummy versions for testing are in `test/agents/`.
+`~/.local/state/opencode/service.json`. You never pass them; the key is sent over stdin
+and never appears in argv or logs.
 
-## Use
+## Commands
+
+```sh
+agentd work --issue <url> --path <dir>       # own one issue until its PR closes
+agentd dashboard [<addr>]                    # live view, default 127.0.0.1:7878
+agentd fetch-issue <url> <dir>               # write <dir>/issue.md
+agentd fetch-pr <pr-url> <dir>               # write <dir>/pr-feedback/<n>-pr-feedback.md
+agentd spawn --prompt <text>                 # prompt an opencode session directly
+```
+
+`work` prints `{"issue":…,"pid":…}` and exits; the supervisor continues in the
+background. Add `--foreground` to run it in the calling process.
 
 ```sh
 agentd work --issue "https://github.com/org/app/issues/12" --path ~/work/app/issues
-agentd dashboard                         # live view at 127.0.0.1:7878
-agentd fetch-issue <issue-url> <dir>     # write <dir>/issue.md
-agentd fetch-pr <pr-url> <dir>           # write <dir>/pr-feedback/<n>-pr-feedback.md
-agentd spawn --prompt "..."              # prompt an opencode session directly
 ```
 
-`work` is fire and forget: it starts a background supervisor and returns at once with
-`{"issue":…,"pid":…}`. The supervisor routes the issue, then keeps watching its PR
-until it merges or closes. `--foreground` runs it in the calling process instead.
+## Artifacts
 
-Artifacts for issue 12:
+For issue 12, `<--path>/#12/` contains:
 
 ```
-<--path>/#12/
-  issue.md
-  plan/<n>-plan.md
-  review/<n>-<kind>.md
-  development/<n>-development.md
-  pr-feedback/<n>-pr-feedback.md
+issue.md                         the issue text, written at start
+plan/<n>-plan.md                 the plan
+review/<n>-security.md           one file per review run
+review/<n>-code.md
+review/<n>-uiux.md
+development/<n>-development.md   the developer's summary, one per developer run
+pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 ```
 
-`$HOME_REPO_PATH/tasks/` holds the task log and lock (keep it out of git):
-
-```
-$HOME_REPO_PATH/tasks/<owner>/<repo>/<n>/
-  events.jsonl   append-only log; all state is replayed from it
-  lock           held by the one supervisor
-```
+`<n>` counts writes of that file, so repeated runs never overwrite earlier ones.
 
 ## Steps
 
-| Step | Agent | Reads | Writes |
-|---|---|---|---|
-| plan | planner | `issue.md` | `plan/<n>-plan.md` |
-| develop | developer | the plan | `development/<n>-development.md` |
-| security review | reviewer-security | the pushed branch | `review/<n>-security.md` |
-| code review | reviewer-code | the pushed branch | `review/<n>-code.md` |
-| ui/ux review | reviewer-uiux | the pushed branch | `review/<n>-uiux.md` |
-| address reviews | developer | the three reviews | `development/<n>-development.md` |
-| PR ready | developer | — | `development/<n>-development.md` |
-| PR feedback | developer | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
+| Step | Agent | Session | Reads | Writes |
+|---|---|---|---|---|
+| plan | `planner` | new | `issue.md` | `plan/<n>-plan.md` |
+| develop | `developer` | new | the plan | `development/<n>-development.md` |
+| security review | `reviewer-security` | new | the pushed branch | `review/<n>-security.md` |
+| code review | `reviewer-code` | new | the pushed branch | `review/<n>-code.md` |
+| ui/ux review | `reviewer-uiux` | new | the pushed branch | `review/<n>-uiux.md` |
+| address reviews | `developer` | resumes | the three reviews | `development/<n>-development.md` |
+| PR ready | `developer` | resumes | — | `development/<n>-development.md` |
+| PR feedback | `developer` | resumes | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
 
-Each file is numbered and never overwritten. The developer keeps one session from the
-plan onward, so it implements, applies the reviews, and answers feedback.
+The three reviews are collected before the developer runs, so one pass addresses all of
+them. The developer keeps one session from the plan onward and is resumed for reviews
+and feedback.
 
-The dashboard lists every task with its issue link, PR link, current step, and its
-artifacts. It only serves those artifact files, nothing else from the repository.
+Define the five agents wherever opencode resolves its agents. Dummy versions for local
+testing are in this repo's `test/agents/`.
+
+## Dashboard
+
+`agentd dashboard` serves a read-only view over HTTP and SSE: every task with its issue
+link, PR link, current step, and numbered artifacts. It serves only those artifact
+files and nothing else from the repository.
 
 ## Development
 
@@ -134,5 +154,5 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Lints are set in `Cargo.toml`; the clippy command gates the policy. There is no CI, so
-run these before pushing.
+Lints are configured in `Cargo.toml`; the clippy command is the gate. There is no CI,
+so run all three before pushing.
