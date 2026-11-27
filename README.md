@@ -18,13 +18,18 @@ to read and the path to write.
 
 ## Install
 
-For your user (no sudo; rustup puts `~/.cargo/bin` on `PATH`):
+Clone the repo, then run its installer:
 
 ```sh
-cargo install --path .
+git clone https://github.com/BirajMainali/agentd && cd agentd
+./install.sh
 ```
 
-For all users:
+That runs `cargo install --path .` and puts `agentd` in `~/.cargo/bin` (no sudo;
+rustup keeps it on `PATH`). Check with `agentd help`. To update, `git pull` and run
+it again.
+
+For all users of the machine:
 
 ```sh
 cargo build --release
