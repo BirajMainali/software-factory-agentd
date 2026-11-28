@@ -7,12 +7,12 @@
 <style>
   :root {
     color-scheme: light dark;
-    --text: #1f2328; --muted: #656d76; --line: #d8dee4; --panel: #f6f8fa;
+    --text: #1f2328; --muted: #656d76; --line: #d8dee4; --panel: #f6f8fa; --bg: #fff;
     --accent: #0969da; --good: #1a7f37; --warn: #9a6700; --bad: #cf222e;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --text: #e6edf3; --muted: #8d96a0; --line: #30363d; --panel: #161b22;
+      --text: #e6edf3; --muted: #8d96a0; --line: #30363d; --panel: #161b22; --bg: #0d1117;
       --accent: #4493f8; --good: #3fb950; --warn: #d29922; --bad: #f85149;
     }
   }
@@ -39,12 +39,47 @@
   .pipeline.backing_off span.now { background: var(--warn); }
   .title { margin-left: .5rem; }
   .stage { font-size: .8125rem; color: var(--muted); margin-top: 2px; }
-  .files { display: flex; flex-wrap: wrap; gap: .125rem .75rem; font-size: .8125rem; max-width: 22rem; }
-  .files a { color: var(--accent); text-decoration: none; }
-  .files a:hover { text-decoration: underline; }
   .bad { color: var(--bad); }
   .warn { color: var(--warn); }
   .you { color: var(--accent); font-weight: 600; }
+
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel); }
+  tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  button.docs { font: inherit; font-size: .8125rem; color: var(--accent); background: none; border: 0; padding: 2px 0; cursor: pointer; }
+  button.docs:hover { text-decoration: underline; }
+  button.docs:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+
+  #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); }
+  /* `hidden` must win over the drawer's own display. */
+  .drawer[hidden], #scrim[hidden] { display: none; }
+  .drawer {
+    position: fixed; inset: 0 0 0 auto; width: min(56rem, 100%); background: var(--bg);
+    border-left: 1px solid var(--line); display: flex; flex-direction: column;
+    animation: slide-in .15s ease-out; box-shadow: -8px 0 24px rgba(0, 0, 0, .12);
+  }
+  @media (prefers-reduced-motion: reduce) { .drawer { animation: none; } }
+  @keyframes slide-in { from { transform: translateX(2rem); opacity: .4; } to { transform: none; opacity: 1; } }
+  .drawer-head { display: flex; align-items: flex-start; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); }
+  .drawer-head .grow { flex: 1; min-width: 0; }
+  .drawer-head strong { font-size: 1rem; }
+  .drawer-head button { font: inherit; font-size: 1.5rem; line-height: 1; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 .25rem; }
+  .drawer-head button:hover { color: var(--text); }
+  .drawer-body { flex: 1; display: grid; grid-template-columns: 15rem 1fr; min-height: 0; }
+  .drawer nav { overflow: auto; border-right: 1px solid var(--line); padding: .75rem 0; }
+  .drawer nav h2 { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: .75rem 1rem .25rem; }
+  .drawer nav a { display: flex; align-items: center; gap: .5rem; padding: .35rem 1rem; color: var(--text); text-decoration: none; cursor: pointer; }
+  .drawer nav a:hover { background: var(--panel); }
+  .drawer nav a[aria-current="true"] { background: var(--panel); box-shadow: inset 3px 0 0 var(--accent); }
+  .drawer nav .run { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .8125rem; margin-left: auto; }
+  .drawer iframe { width: 100%; height: 100%; border: 0; background: var(--bg); }
+  .drawer .nothing { color: var(--muted); padding: 0 1rem; }
+  @media (max-width: 40rem) {
+    body { padding: 1rem; }
+    .drawer-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .drawer nav { max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  }
 
   #empty { color: var(--muted); }
 </style>
@@ -57,19 +92,55 @@
 
 <table>
   <thead>
-    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>Files</th><th>For</th></tr>
+    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>Docs</th><th>For</th></tr>
   </thead>
   <tbody id="tasks"></tbody>
 </table>
 <p id="empty" hidden>No tasks yet.</p>
+
+<div id="scrim" hidden></div>
+<aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+  <div class="drawer-head">
+    <div class="grow">
+      <strong id="drawer-title"></strong>
+      <div class="muted" id="drawer-sub"></div>
+    </div>
+    <button id="drawer-close" aria-label="Close documents">×</button>
+  </div>
+  <div class="drawer-body">
+    <nav id="doclist" aria-label="Documents"></nav>
+    <iframe id="docview" title="Document"></iframe>
+  </div>
+</aside>
 
 <script>
   const ICONS = {
     issue: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.25"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/></svg>',
     pull: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/></svg>',
   };
+  /** Document folders in reading order, and how each is named in the drawer. */
+  const TYPES = [
+    ["issue", "Issue"],
+    ["plan", "Plan"],
+    ["review", "Reviews"],
+    ["development", "Development"],
+    ["pr-feedback", "PR feedback"],
+  ];
+  /** File suffixes, so a review round reads "Code review", not "code". */
+  const SUFFIXES = {
+    plan: "Plan", development: "Development", "pr-feedback": "PR feedback",
+    code: "Code review", security: "Security review", uiux: "UI review",
+  };
   const tbody = document.getElementById("tasks");
+  const drawer = document.getElementById("drawer");
+  const scrim = document.getElementById("scrim");
+  const doclist = document.getElementById("doclist");
+  const docview = document.getElementById("docview");
+  const drawerTitle = document.getElementById("drawer-title");
+  const drawerSub = document.getElementById("drawer-sub");
+  const closeButton = document.getElementById("drawer-close");
   let tasks = [];
+  let opener = null;
 
   function iconLink(url, icon, label, text) {
     if (!url || !url.startsWith("https://github.com/")) {
@@ -149,26 +220,132 @@
     return [`${task.agent} ${task.running ? "working" : "next"}`, ""];
   }
 
-  /** The task's own artifacts, newest numbering first in each folder. */
-  function files(task) {
-    if (!task.documents || task.documents.length === 0) {
-      const none = document.createElement("span");
-      none.className = "muted";
-      none.textContent = "—";
-      return none;
+  /** `/doc/<owner>/<repo>/<n>/<path>`; the path came from the server's own list. */
+  function docHref(task, doc) {
+    return `/doc/${task.repo}/${task.number}/${doc}`;
+  }
+
+  /** "plan/2-plan.md" → { type: "plan", run: 2, label: "Plan" }. */
+  function describe(doc) {
+    if (doc === "issue.md") return { type: "issue", run: null, label: "Issue" };
+    const [type, file] = doc.split("/");
+    const stem = file.replace(/\.md$/, "");
+    const match = stem.match(/^(\d+)-(.*)$/);
+    const suffix = match ? match[2] : stem;
+    return {
+      type,
+      run: match ? Number(match[1]) : null,
+      label: SUFFIXES[suffix] ?? suffix.replaceAll("-", " "),
+    };
+  }
+
+  /** Docs grouped by type (in TYPES order), numbered by their run prefix. */
+  function group(documents) {
+    const groups = [];
+    for (const [type, name] of TYPES) {
+      const items = documents
+        .map((doc) => ({ doc, ...describe(doc) }))
+        .filter((item) => item.type === type)
+        .sort((a, b) => (a.run ?? 0) - (b.run ?? 0));
+      if (items.length) groups.push({ name, items });
     }
-    const wrap = document.createElement("div");
-    wrap.className = "files";
-    for (const doc of task.documents) {
-      const link = document.createElement("a");
-      link.href = `/doc/${task.repo}/${task.number}/${doc}`;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.textContent = doc.split("/").pop();
-      link.title = task.work_path ? `${task.work_path}/${doc}` : doc;
-      wrap.append(link);
+    return groups;
+  }
+
+  function selectDoc(task, link) {
+    for (const other of doclist.querySelectorAll("a[data-doc]")) {
+      other.removeAttribute("aria-current");
     }
-    return wrap;
+    link.setAttribute("aria-current", "true");
+    docview.src = link.dataset.doc;
+  }
+
+  function fillDrawer(task) {
+    drawerTitle.textContent = `${task.repo}#${task.number}`;
+    drawerSub.textContent = task.title ?? "";
+    doclist.replaceChildren();
+    const groups = group(task.documents ?? []);
+    docview.hidden = groups.length === 0;
+    if (groups.length === 0) {
+      docview.removeAttribute("src");
+      const nothing = document.createElement("p");
+      nothing.className = "nothing";
+      nothing.textContent = "No documents yet.";
+      doclist.append(nothing);
+      return;
+    }
+    for (const group of groups) {
+      const heading = document.createElement("h2");
+      heading.textContent = group.name;
+      doclist.append(heading);
+      for (const item of group.items) {
+        const link = document.createElement("a");
+        link.href = docHref(task, item.doc);
+        link.dataset.doc = docHref(task, item.doc);
+        link.append(item.label);
+        if (item.run !== null) {
+          const run = document.createElement("span");
+          run.className = "run";
+          run.textContent = `#${item.run}`;
+          run.title = `Run ${item.run}`;
+          link.append(run);
+        }
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          selectDoc(task, link);
+        });
+        link.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectDoc(task, link);
+          }
+        });
+        doclist.append(link);
+      }
+    }
+    selectDoc(task, doclist.querySelector("a[data-doc]"));
+  }
+
+  function openDrawer(task, source) {
+    opener = source ?? null;
+    fillDrawer(task);
+    scrim.hidden = false;
+    drawer.hidden = false;
+    closeButton.focus();
+  }
+
+  function closeDrawer() {
+    drawer.hidden = true;
+    scrim.hidden = true;
+    docview.removeAttribute("src");
+    if (opener) opener.focus();
+    opener = null;
+  }
+
+  closeButton.addEventListener("click", closeDrawer);
+  scrim.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !drawer.hidden) closeDrawer();
+  });
+
+  function docsButton(task, row) {
+    const button = document.createElement("button");
+    button.className = "docs";
+    button.type = "button";
+    const count = task.documents ? task.documents.length : 0;
+    button.textContent = count ? `${count} doc${count === 1 ? "" : "s"}` : "—";
+    button.disabled = count === 0;
+    button.title = count ? "Open documents" : "No documents yet";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openDrawer(task, button);
+    });
+    row.addEventListener("click", () => openDrawer(task, row));
+    row.tabIndex = 0;
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && event.target === row) openDrawer(task, row);
+    });
+    return button;
   }
 
   function renderTable() {
@@ -191,7 +368,7 @@
       const [text, tone] = now(task);
       const state = cell(row, text, tone);
       if (task.last_failure) state.title = task.last_failure;
-      cell(row, files(task));
+      cell(row, docsButton(task, row));
       cell(row, ago(task.since), "num");
     }
   }

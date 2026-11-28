@@ -34,7 +34,8 @@ plan ─► develop (push, draft PR) ─► security ─► code ─► ui/ux
   the main session is stopped so opencode cannot advance the workflow on its own.
 - **Artifacts.** Each step receives the absolute paths to read and the absolute path to
   write. Files are numbered per run and never overwritten, so a resumed task can see
-  what already happened.
+  what already happened. A retry of the same attempt reuses its number instead of
+  numbering another file.
 - **State.** Every step appends to `$HOME_REPO_PATH/tasks/<owner>/<repo>/<n>/events.jsonl`.
   All state is replayed from that log, including after a crash. A run that was
   interrupted picks up its own unfinished step instead of starting over.
@@ -58,8 +59,13 @@ git clone https://github.com/BirajMainali/software-factory-agentd && cd software
 ./install.sh
 ```
 
-`install.sh` runs `cargo install --path . --locked`, putting `agentd` in
+`install.sh` runs `cargo install --path . --locked --force`, putting `agentd` in
 `~/.cargo/bin`. Confirm with `agentd help`. To update, pull and run it again.
+
+With `HOME_REPO_PATH` set, it also installs and starts the dashboard as the systemd
+user service `agentd-dashboard.service`, enabled at boot, and enables lingering so the
+service runs without a login session. Without `HOME_REPO_PATH` it skips that step and
+says so; rerun the script once the variable is set.
 
 To install for all users:
 
@@ -143,8 +149,18 @@ testing are in this repo's `test/agents/`.
 ## Dashboard
 
 `agentd dashboard` serves a read-only view over HTTP and SSE: every task with its issue
-link, PR link, current step, and numbered artifacts. It serves only those artifact
-files and nothing else from the repository.
+link, PR link, current step, and numbered artifacts. Clicking a task opens a drawer
+listing its documents by type, numbered by run; each document is rendered from markdown.
+It serves only those artifact files and nothing else from the repository.
+
+`install.sh` runs it as `agentd-dashboard.service` at `http://127.0.0.1:7878`, restarting
+on failure and starting at boot. Manage it like any user service:
+
+```sh
+systemctl --user status agentd-dashboard
+systemctl --user restart agentd-dashboard
+journalctl --user -u agentd-dashboard -f
+```
 
 ## Development
 

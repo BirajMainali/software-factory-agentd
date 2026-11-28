@@ -6,6 +6,7 @@
 use crate::github::GitHubUrl;
 use crate::home;
 use crate::workflow::{self, Step, TaskState};
+use pulldown_cmark::{Event, Options, Parser, html};
 use serde::Serialize;
 use serde_json::json;
 use std::fs;
@@ -353,9 +354,58 @@ fn serve_document(stream: &mut TcpStream, home: &Path, rest: &str) -> io::Result
         Err(_) => return not_found(stream),
     }
     match fs::read_to_string(&path) {
-        Ok(text) => respond(stream, "200 OK", "text/plain; charset=utf-8", &text),
+        // Every artifact agentd writes is markdown; show it as written, not as source.
+        Ok(text) => respond(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            &markdown_page(&text, &name),
+        ),
         Err(_) => not_found(stream),
     }
+}
+
+/// A standalone page for one artifact. `name` is already constrained by
+/// [`is_document`] to digits, dashes and known words, so it is safe in the title.
+fn markdown_page(markdown: &str, name: &str) -> String {
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    // Artifacts quote issue text and tool output; raw HTML in them must not run.
+    let parser = Parser::new_ext(markdown, options).map(|event| match event {
+        Event::Html(text) | Event::InlineHtml(text) => Event::Text(text),
+        other => other,
+    });
+    let mut body = String::new();
+    html::push_html(&mut body, parser);
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{name}</title>
+<style>
+  :root {{ color-scheme: light dark; --text: #1f2328; --muted: #656d76; --line: #d8dee4; --panel: #f6f8fa; --accent: #0969da; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --text: #e6edf3; --muted: #8d96a0; --line: #30363d; --panel: #161b22; --accent: #4493f8; }} }}
+  body {{ font: 15px/1.6 system-ui, sans-serif; color: var(--text); margin: 0; padding: 2rem; max-width: 52rem; }}
+  h1, h2, h3 {{ line-height: 1.25; margin: 1.5em 0 .5em; }}
+  h1 {{ font-size: 1.5rem; }} h2 {{ font-size: 1.2rem; }} h3 {{ font-size: 1rem; }}
+  p, ul, ol, table {{ margin: .75em 0; }}
+  a {{ color: var(--accent); }}
+  code {{ background: var(--panel); padding: .1em .3em; border-radius: 4px; font-size: .875em; }}
+  pre {{ background: var(--panel); padding: 1rem; border-radius: 6px; overflow: auto; }}
+  pre code {{ background: none; padding: 0; }}
+  blockquote {{ margin: .75em 0; padding: 0 1em; color: var(--muted); border-left: 3px solid var(--line); }}
+  table {{ border-collapse: collapse; }} th, td {{ padding: .35rem .6rem; border: 1px solid var(--line); text-align: left; }}
+  li.task-list-item {{ list-style: none; }} li.task-list-item input {{ margin-right: .4em; }}
+</style>
+</head>
+<body>
+<article>{body}</article>
+</body>
+</html>
+"#
+    )
 }
 
 /// `/doc/<owner>/<repo>/<n>/issue.md` or `/doc/<owner>/<repo>/<n>/<folder>/<file>`.
@@ -399,6 +449,20 @@ mod tests {
         ] {
             assert!(!is_document(name), "{name}");
         }
+    }
+
+    #[test]
+    fn markdown_pages_render_instead_of_showing_source() {
+        let page = markdown_page(
+            "# Plan\n\n- [x] done\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n<script>alert(1)</script>",
+            "plan/1-plan.md",
+        );
+        assert!(page.contains("<h1>Plan</h1>"), "{page}");
+        assert!(page.contains("type=\"checkbox\""), "{page}");
+        assert!(page.contains("<table>"), "{page}");
+        assert!(page.contains("&lt;script&gt;"), "{page}");
+        assert!(!page.contains("<script>alert"), "{page}");
+        assert!(page.contains("<title>plan/1-plan.md</title>"), "{page}");
     }
 
     #[test]

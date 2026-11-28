@@ -41,6 +41,9 @@ pub(crate) struct TaskState {
     pub(crate) pending_child: Option<(Step, String)>,
     /// Times each artifact was written; the next run uses `runs + 1`.
     runs: BTreeMap<Artifact, u32>,
+    /// The last turn ended without completing its step, so its retry reuses the
+    /// attempt's file instead of numbering a new one.
+    retry: bool,
     /// Fingerprint of the PR feedback already recorded, so the watch does not repeat it.
     feedback_key: Option<String>,
     /// Failed worker exits since the last progress.
@@ -79,7 +82,11 @@ impl TaskState {
                 after,
             } => {
                 self.pending_child = None;
-                *self.runs.entry(def(*step).writes).or_default() += 1;
+                if self.retry {
+                    self.retry = false;
+                } else {
+                    *self.runs.entry(def(*step).writes).or_default() += 1;
+                }
                 self.turn = Some(OpenTurn {
                     step: *step,
                     session: session.clone(),
@@ -89,10 +96,12 @@ impl TaskState {
             Event::SubagentFinished { outcome, .. } => {
                 if *outcome != Outcome::Succeeded {
                     self.turn = None;
+                    self.retry = true;
                 }
             }
             Event::StepCompleted { step } => {
                 self.turn = None;
+                self.retry = false;
                 match step.next() {
                     Some(next) => self.step = next,
                     None => self.finished = true,
@@ -110,6 +119,7 @@ impl TaskState {
             Event::PrFeedbackArrived { number, key } => {
                 self.runs.insert(Artifact::PrFeedback, *number);
                 self.feedback_key = Some(key.clone());
+                self.retry = false;
                 self.step = Step::DevelopPrFeedback;
                 self.finished = false;
                 self.step_since = record.ts;
@@ -152,7 +162,7 @@ impl TaskState {
                 .collect(),
         };
         Slots {
-            write: if resumed {
+            write: if resumed || self.retry {
                 self.run_count(def.writes).max(1)
             } else {
                 self.run_count(def.writes) + 1
@@ -352,5 +362,30 @@ mod tests {
         prompt(&mut state, Step::OpenPullRequest);
         assert_eq!(state.slots(Step::DevelopPlan, false).write, 4);
         assert_eq!(state.slots(Step::OpenPullRequest, true).write, 3);
+    }
+
+    #[test]
+    fn a_retried_step_reuses_its_file_instead_of_numbering_another() {
+        let mut state = TaskState::default();
+        assert_eq!(state.slots(Step::DevelopPlan, false).write, 1);
+        prompt(&mut state, Step::DevelopPlan);
+
+        state.apply(&Record {
+            ts: 1,
+            event: Event::SubagentFinished {
+                step: Step::DevelopPlan,
+                outcome: Outcome::Failed,
+            },
+        });
+        assert_eq!(state.slots(Step::DevelopPlan, false).write, 1);
+        prompt(&mut state, Step::DevelopPlan);
+
+        state.apply(&Record {
+            ts: 2,
+            event: Event::StepCompleted {
+                step: Step::DevelopPlan,
+            },
+        });
+        assert_eq!(state.slots(Step::AddressReviews, false).write, 2);
     }
 }
