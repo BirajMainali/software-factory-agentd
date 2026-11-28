@@ -44,8 +44,9 @@ pub(crate) struct TaskState {
     /// The last turn ended without completing its step, so its retry reuses the
     /// attempt's file instead of numbering a new one.
     retry: bool,
-    /// Steps that completed, in order. Repeats are the loop the task went through.
-    pub(crate) history: Vec<Step>,
+    /// What happened, in order, as the dashboard names it: steps, waits and
+    /// reviews. Repeats are the loop the task went through.
+    pub(crate) display: Vec<&'static str>,
     /// Fingerprint of the PR feedback already recorded, so the watch does not repeat it.
     feedback_key: Option<String>,
     /// The key before the latest round; its time bounds what the round shows.
@@ -106,7 +107,7 @@ impl TaskState {
             Event::StepCompleted { step, next } => {
                 self.turn = None;
                 self.retry = false;
-                self.history.push(*step);
+                self.display.push(step.stage_label());
                 match next.or_else(|| replayed_next(*step)) {
                     Some(next) => self.step = next,
                     None => self.finished = true,
@@ -125,12 +126,16 @@ impl TaskState {
                 self.runs.insert(Artifact::PrFeedback, *number);
                 self.prior_feedback_key.clone_from(&self.feedback_key);
                 self.feedback_key = Some(key.clone());
+                self.display.push("Review");
                 self.retry = false;
                 self.step = Step::DevelopPrFeedback;
                 self.finished = false;
                 self.step_since = record.ts;
             }
-            Event::PrReady => self.finished = true,
+            Event::PrReady => {
+                self.finished = true;
+                self.display.push("Wait");
+            }
             Event::WorkerFailed { reason } => self.last_failure = Some(reason.clone()),
             Event::WorkerExited { code } => {
                 if *code != Some(0) {

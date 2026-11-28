@@ -202,25 +202,30 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     let state = TaskState::replay(&records);
     view.unreadable = false;
     view.title.clone_from(&state.title);
-    let mut labels: Vec<&'static str> = Vec::new();
-    for step in state.history.iter().chain(state.current().iter()) {
-        let label = step.stage_label();
-        if labels.last().copied() != Some(label) {
-            labels.push(label);
+    let mut labels = state.display.clone();
+    if let Some(step) = state.current() {
+        labels.push(step.stage_label());
+    }
+    let mut stages: Vec<&'static str> = Vec::new();
+    for label in labels {
+        if stages.last().copied() != Some(label) {
+            stages.push(label);
         }
     }
-    let mut current = (!state.is_finished()).then(|| labels.len().saturating_sub(1));
-    // A finished task with an open PR is waiting on the PR itself.
-    if state.is_finished() && state.pr().is_some() {
-        if labels.last().copied() != Some("PR") {
-            labels.push("PR");
-        }
-        if !state.pr_closed {
-            current = Some(labels.len() - 1);
-        }
+    // Old logs finish without a ready label: still show the wait.
+    if state.is_finished()
+        && state.pr().is_some()
+        && !state.pr_closed
+        && stages.last().copied() != Some("Wait")
+    {
+        stages.push("Wait");
     }
-    view.current = current;
-    view.stages = labels;
+    view.current = if state.current().is_some() || (!state.pr_closed && state.pr().is_some()) {
+        Some(stages.len().saturating_sub(1))
+    } else {
+        None
+    };
+    view.stages = stages;
     view.agent = state.current().map(|step| step.role().agent());
     view.running = state.turn.is_some();
     view.stuck = state.is_stuck();
