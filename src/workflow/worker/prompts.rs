@@ -28,7 +28,7 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots)
     }
     if matches!(
         step,
-        Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
+        Step::Develop | Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
     ) {
         lines.push(format!(
             "Only when the reviewers are done and every verdict is approved, resolve any conflicts with the base branch, then add the `{}` label to the pull request.",
@@ -70,7 +70,7 @@ mod tests {
         let reads = match def(step).reads {
             Reads::None => Vec::new(),
             Reads::One(artifact) => vec![(artifact, 1)],
-            Reads::AllReviews => ReviewKind::ALL
+            Reads::AllReviews | Reads::PlanOrReviews => ReviewKind::ALL
                 .iter()
                 .map(|kind| (Artifact::Review(*kind), 1))
                 .collect(),

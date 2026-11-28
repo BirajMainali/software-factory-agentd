@@ -19,7 +19,7 @@ plan ─► develop ─► read the PR labels
                       ├─ factory-ready ─────► PR review ──► watch
                       └─ neither ─█
                                   ▼
-             security ─► code ─► ui/ux ─► address reviews ─► develop ─┐
+             security ─► code ─► ui/ux ─► develop ──────────────────────┐
                         ▲                                            │
                         └────────────────────────────────────────────┘
 
@@ -135,11 +135,10 @@ pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 | Step | Agent | Session | Reads | Writes |
 |---|---|---|---|---|
 | plan | `planner` | new | `issue.md` | `plan/<n>-plan.md` |
-| develop | `developer` | new | the plan | `development/<n>-development.md` |
+| develop | `developer` | new | the plan, then the latest reviews | `development/<n>-development.md` |
 | security review | `reviewer-security` | new | the pushed branch | `review/<n>-security.md` |
 | code review | `reviewer-code` | new | the pushed branch | `review/<n>-code.md` |
 | ui/ux review | `reviewer-uiux` | new | the pushed branch | `review/<n>-uiux.md` |
-| address reviews | `developer` | resumes | the three reviews | `development/<n>-development.md` |
 | PR feedback | `developer` | resumes | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
 
 After every developer pass the labels decide: `factory-approved` merges,

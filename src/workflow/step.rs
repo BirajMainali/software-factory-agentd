@@ -64,6 +64,8 @@ pub(crate) enum Reads {
     One(Artifact),
     /// The latest review of each kind, collected before the developer runs.
     AllReviews,
+    /// The plan until reviews exist, then the latest of each review.
+    PlanOrReviews,
 }
 
 pub(crate) struct StepDef {
@@ -106,11 +108,11 @@ pub(crate) fn def(step: Step) -> StepDef {
         Step::Develop => StepDef {
             agent: Role::Developer,
             session: Session::Fresh,
-            reads: Reads::One(Artifact::Plan),
+            // The plan on the first pass, the reviews after that.
+            reads: Reads::PlanOrReviews,
             writes: Artifact::Development,
-            // Only reached when develop opened no PR: review the branch here.
             next: Some(Step::Review(ReviewKind::Security)),
-            instruction: "Here is the plan that you need to implement",
+            instruction: "Here is what you need to work on",
         },
         Step::Review(kind) => StepDef {
             agent: Role::Reviewer(kind),
@@ -120,17 +122,17 @@ pub(crate) fn def(step: Step) -> StepDef {
             next: Some(match kind {
                 ReviewKind::Security => Step::Review(ReviewKind::Code),
                 ReviewKind::Code => Step::Review(ReviewKind::UiUx),
-                ReviewKind::UiUx => Step::AddressReviews,
+                ReviewKind::UiUx => Step::Develop,
             }),
             instruction: "Here is the change that you need to review",
         },
+        // Kept so task logs written before reviews fed Develop still replay.
         Step::AddressReviews => StepDef {
             agent: Role::Developer,
             session: Session::Resume,
             reads: Reads::AllReviews,
             writes: Artifact::Development,
-            // Loop: the next check decides whether the PR is ready now.
-            next: Some(Step::Review(ReviewKind::Security)),
+            next: None,
             instruction: "Here are the reviews that you need to work on together",
         },
         // Kept so task logs written before reviews were collected still replay.
@@ -296,7 +298,6 @@ mod tests {
                 Step::Review(ReviewKind::Security),
                 Step::Review(ReviewKind::Code),
                 Step::Review(ReviewKind::UiUx),
-                Step::AddressReviews,
             ]
         );
     }

@@ -171,6 +171,23 @@ impl TaskState {
                     (artifact, self.run_count(artifact).max(1))
                 })
                 .collect(),
+            Reads::PlanOrReviews => {
+                let reviews: Vec<_> = ReviewKind::ALL
+                    .iter()
+                    .map(|kind| {
+                        let artifact = Artifact::Review(*kind);
+                        (artifact, self.run_count(artifact).max(1))
+                    })
+                    .collect();
+                if reviews
+                    .iter()
+                    .any(|(artifact, _)| self.run_count(*artifact) > 0)
+                {
+                    reviews
+                } else {
+                    vec![(Artifact::Plan, self.run_count(Artifact::Plan).max(1))]
+                }
+            }
         };
         Slots {
             write: if resumed || self.retry {
@@ -253,6 +270,24 @@ mod tests {
                 after: None,
             },
         });
+    }
+
+    #[test]
+    fn develop_reads_the_plan_until_reviews_exist() {
+        let mut state = TaskState::default();
+        let slots = state.slots(Step::Develop, false);
+        assert_eq!(slots.reads, vec![(Artifact::Plan, 1)]);
+
+        prompt(&mut state, Step::Review(ReviewKind::Code));
+        let slots = state.slots(Step::Develop, false);
+        assert_eq!(
+            slots.reads,
+            vec![
+                (Artifact::Review(ReviewKind::Security), 1),
+                (Artifact::Review(ReviewKind::Code), 1),
+                (Artifact::Review(ReviewKind::UiUx), 1),
+            ]
+        );
     }
 
     #[test]
