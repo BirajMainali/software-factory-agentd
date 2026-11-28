@@ -31,7 +31,7 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots)
         Step::DevelopPlan | Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
     ) {
         lines.push(format!(
-            "When every review is addressed, add the `{}` label to the pull request.",
+            "When this round is done and verified, add the `{}` label to the pull request.",
             crate::github::pr::READY_LABEL
         ));
     }
@@ -109,6 +109,7 @@ mod tests {
             &slots_for(Step::DevelopPlan, 2),
         );
         assert!(prompt.contains("open a PR that references this issue (for example `Fixes #7`)"));
+        assert!(prompt.contains("add the `factory-ready` label to the pull request"));
     }
 
     #[test]
