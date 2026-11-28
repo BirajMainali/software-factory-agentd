@@ -180,13 +180,13 @@ impl Step {
         match self {
             Self::Plan => "Plan",
             Self::DevelopPlan => "Develop",
-            Self::Review(ReviewKind::Security) => "Sec",
-            Self::Review(ReviewKind::Code) => "Review-code",
-            Self::Review(ReviewKind::UiUx) => "UI/UX",
+            Self::Review(ReviewKind::Security) => "Security review",
+            Self::Review(ReviewKind::Code) => "Code review",
+            Self::Review(ReviewKind::UiUx) => "UI/UX review",
             Self::DevelopReview(_) => "Rework",
-            Self::AddressReviews => "Fix",
-            Self::OpenPullRequest => "PR",
-            Self::DevelopPrFeedback => "Feedback",
+            Self::AddressReviews => "Address reviews",
+            Self::OpenPullRequest => "Pull request",
+            Self::DevelopPrFeedback => "PR feedback",
         }
     }
 
