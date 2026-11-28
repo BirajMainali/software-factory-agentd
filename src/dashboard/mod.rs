@@ -209,7 +209,17 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
             labels.push(label);
         }
     }
-    view.current = (!state.is_finished()).then(|| labels.len().saturating_sub(1));
+    let mut current = (!state.is_finished()).then(|| labels.len().saturating_sub(1));
+    // A finished task with an open PR is waiting on the PR itself.
+    if state.is_finished() && state.pr().is_some() {
+        if labels.last().copied() != Some("PR") {
+            labels.push("PR");
+        }
+        if !state.pr_closed {
+            current = Some(labels.len() - 1);
+        }
+    }
+    view.current = current;
     view.stages = labels;
     view.agent = state.current().map(|step| step.role().agent());
     view.running = state.turn.is_some();

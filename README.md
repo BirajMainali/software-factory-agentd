@@ -14,21 +14,14 @@ reading the issue and the PR. The agents do that work themselves.
 work --issue <url> --path <dir>
         │
         ▼
-plan ─► develop (push, draft PR) ─► security ─► code ─► ui/ux
-                                                    │
-                              developer addresses all three reviews, pushes
-                                                    │
-                              developer marks the PR ready
-                                                    │
-                                                    ▼
-                              watch PR ─► new feedback ─► developer
-                                       │                    └─► security ─► code ─► ui/ux
-                                       │                                        │
-                                       │                    developer addresses all three
-                                       │                    developer marks the PR ready
-                                       │                                        │
-                                       └──────────────◄─────────────────────────┘
-                                       └─ merged/closed ─► exit
+plan ─► develop (push, open PR, label factory-ready-to-review) ─► watch PR
+                                                                  │
+                  ┌───────────────────────────────────────────────┤
+                  │                                               │
+       new feedback (ready label removed)          factory-approved label
+                  │                                               │
+                  ▼                                               ▼
+         developer (resumed) ─► label ready              squash-merge ─► exit
 ```
 
 - **One task, one supervisor.** `work` starts a detached supervisor and returns
@@ -129,9 +122,6 @@ For issue 12, `<--path>/#12/` contains:
 ```
 issue.md                         the issue text, written at start
 plan/<n>-plan.md                 the plan
-review/<n>-security.md           one file per review run
-review/<n>-code.md
-review/<n>-uiux.md
 development/<n>-development.md   the developer's summary, one per developer run
 pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 ```
@@ -144,19 +134,12 @@ pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 |---|---|---|---|---|
 | plan | `planner` | new | `issue.md` | `plan/<n>-plan.md` |
 | develop | `developer` | new | the plan | `development/<n>-development.md` |
-| security review | `reviewer-security` | new | the pushed branch | `review/<n>-security.md` |
-| code review | `reviewer-code` | new | the pushed branch | `review/<n>-code.md` |
-| ui/ux review | `reviewer-uiux` | new | the pushed branch | `review/<n>-uiux.md` |
-| address reviews | `developer` | resumes | the three reviews | `development/<n>-development.md` |
-| PR ready | `developer` | resumes | — | `development/<n>-development.md` |
 | PR feedback | `developer` | resumes | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
 
-A PR feedback round re-runs the three reviews on the new head, then the developer
-addresses them and marks the PR ready again, before the PR goes back to the watch.
-
-The three reviews are collected before the developer runs, so one pass addresses all of
-them. The developer keeps one session from the plan onward and is resumed for reviews
-and feedback.
+The developer opens the PR during develop and adds `factory-ready-to-review` when the
+work is done. Review happens on the PR; when new feedback arrives, the watch removes
+the label and resumes the same developer session for that round. The developer keeps
+one session from the plan onward.
 
 Define the five agents wherever opencode resolves its agents. Dummy versions for local
 testing are in this repo's `test/agents/`.

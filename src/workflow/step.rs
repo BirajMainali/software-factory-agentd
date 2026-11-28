@@ -108,7 +108,8 @@ pub(crate) fn def(step: Step) -> StepDef {
             session: Session::Fresh,
             reads: Reads::One(Artifact::Plan),
             writes: Artifact::Development,
-            next: Some(Step::Review(ReviewKind::Security)),
+            // The PR label decides what happens next; the route has nothing left.
+            next: None,
             instruction: "Here is the plan that you need to implement",
         },
         Step::Review(kind) => StepDef {
@@ -157,9 +158,8 @@ pub(crate) fn def(step: Step) -> StepDef {
             session: Session::Resume,
             reads: Reads::One(Artifact::PrFeedback),
             writes: Artifact::Development,
-            // The change the reviewer saw has moved: review the new code before
-            // it goes back to the watch.
-            next: Some(Step::Review(ReviewKind::Security)),
+            // Back to the watch once the developer has pushed and labeled ready.
+            next: None,
             instruction: "Here is the PR feedback that you need to work on",
         },
     }
@@ -275,36 +275,17 @@ mod tests {
     }
 
     #[test]
-    fn all_reviews_are_collected_before_the_developer_fixes_them() {
+    fn the_route_is_plan_then_develop() {
+        // The PR label, not the route, decides what happens after develop.
         assert_eq!(
             Step::route().collect::<Vec<_>>(),
-            vec![
-                Step::Plan,
-                Step::DevelopPlan,
-                Step::Review(ReviewKind::Security),
-                Step::Review(ReviewKind::Code),
-                Step::Review(ReviewKind::UiUx),
-                Step::AddressReviews,
-                Step::OpenPullRequest,
-            ]
+            vec![Step::Plan, Step::DevelopPlan]
         );
     }
 
     #[test]
-    fn pr_feedback_is_reviewed_again_before_the_pr_is_watched() {
-        let after_feedback: Vec<_> =
-            std::iter::successors(Some(Step::DevelopPrFeedback), |step| step.next()).collect();
-        assert_eq!(
-            after_feedback,
-            vec![
-                Step::DevelopPrFeedback,
-                Step::Review(ReviewKind::Security),
-                Step::Review(ReviewKind::Code),
-                Step::Review(ReviewKind::UiUx),
-                Step::AddressReviews,
-                Step::OpenPullRequest,
-            ]
-        );
+    fn a_feedback_round_ends_with_the_developer() {
+        assert_eq!(Step::DevelopPrFeedback.next(), None);
     }
 
     #[test]

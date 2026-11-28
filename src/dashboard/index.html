@@ -206,7 +206,7 @@
     }
     const done = document.createElement("span");
     done.className = "chip";
-    if (!task.agent) {
+    if (task.pr_closed) {
       done.classList.add("now");
       if (state) done.classList.add(state);
     }

@@ -28,7 +28,7 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots)
     }
     if matches!(
         step,
-        Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
+        Step::DevelopPlan | Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
     ) {
         lines.push(format!(
             "When every review is addressed, add the `{}` label to the pull request.",
