@@ -133,7 +133,7 @@ impl TaskState {
             }
             Event::PrReady => {
                 self.finished = true;
-                self.display.push("Ready");
+                self.display.push("PR review");
             }
             Event::WorkerFailed { reason } => self.last_failure = Some(reason.clone()),
             Event::WorkerExited { code } => {

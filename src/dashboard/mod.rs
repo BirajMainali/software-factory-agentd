@@ -212,13 +212,13 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
             stages.push(label);
         }
     }
-    // Old logs finish without a ready label: still show it as ready.
+    // Old logs finish without a ready label: still show the review.
     if state.is_finished()
         && state.pr().is_some()
         && !state.pr_closed
-        && !matches!(stages.last().copied(), Some("Ready" | "PR"))
+        && !matches!(stages.last().copied(), Some("PR review" | "PR"))
     {
-        stages.push("Ready");
+        stages.push("PR review");
     }
     view.current = if state.current().is_some() || (!state.pr_closed && state.pr().is_some()) {
         Some(stages.len().saturating_sub(1))
