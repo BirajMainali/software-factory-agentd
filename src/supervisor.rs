@@ -127,11 +127,27 @@ fn watch(
             thread::sleep(WATCH_INTERVAL);
             continue;
         };
-        // A failed merge (conflicts, branch protection) must not end the watch;
-        // try again next tick and leave the PR to a human.
-        if snapshot.has_label(github::pr::APPROVED_LABEL) && github::pr::merge(pr).is_ok() {
-            append(home, issue, Event::PullRequestClosed)?;
-            return Ok(Watch::Closed);
+        if snapshot.has_label(github::pr::APPROVED_LABEL) {
+            if snapshot.mergeable == Some(true) && github::pr::merge(pr).is_ok() {
+                append(home, issue, Event::PullRequestClosed)?;
+                return Ok(Watch::Closed);
+            }
+            if snapshot.mergeable.is_some() {
+                // Conflicts, or a merge GitHub refused: the developer fixes it.
+                let _ = github::pr::label(pr, github::pr::APPROVED_LABEL, false);
+                let _ = github::pr::label(pr, github::pr::READY_LABEL, false);
+                let number = state.next_pr_feedback();
+                append(
+                    home,
+                    issue,
+                    Event::PrFeedbackArrived {
+                        number,
+                        key: snapshot.key,
+                    },
+                )?;
+                return Ok(Watch::Feedback);
+            }
+            // GitHub has not computed mergeability yet; retry next tick.
         }
         if !snapshot.open {
             append(home, issue, Event::PullRequestClosed)?;

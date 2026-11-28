@@ -23,12 +23,20 @@ impl Worker<'_> {
                 .ok_or_else(|| Error::NoPullRequest(self.issue.clone()))?;
             // Only what the previous round did not already give the developer.
             let snapshot = github::pr::fetch_since(&pr, self.state.feedback_since())?;
+            let mut text = snapshot.markdown;
+            if snapshot.mergeable == Some(false) {
+                text.push_str(
+                    "\n## Merge conflict\n\nThe pull request does not merge cleanly into \
+                     its base. Fetch the base branch, merge it in, resolve every conflict, \
+                     push, and re-add `factory-ready`.\n",
+                );
+            }
             let read = prompts::file(
                 &self.dir,
                 Artifact::PrFeedback,
                 slots.read(Artifact::PrFeedback),
             );
-            write_file(&read, &snapshot.markdown)?;
+            write_file(&read, &text)?;
         }
         let prompt = prompts::for_step(step, &self.issue, &self.dir, &slots);
         let (session, after) = if let Some(turn) = open {

@@ -44,8 +44,9 @@ watch ──► new feedback ──► remove factory-ready ──► developer 
   not as it is today.
 - **PR labels.** The developer adds `factory-ready` when the work is ready;
   the route stops and the supervisor watches for feedback. A reviewer adds
-  `factory-approved` and the supervisor squash-merges the PR. New feedback removes
-  the ready label before the developer is woken.
+  `factory-approved` and agentd squash-merges it once GitHub reports it mergeable. If
+  it is not, both labels come off and the developer gets a merge-conflict note in the
+  next round. New feedback removes the ready label before the developer is woken.
 - **Failure handling.** A failed agent run is retried with backoff. After three
   consecutive failures the task is left for a human; the supervisor stays alive and
   keeps watching the PR.

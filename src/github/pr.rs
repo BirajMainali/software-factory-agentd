@@ -30,6 +30,9 @@ struct PullRequest {
     head: Branch,
     #[serde(default)]
     merged: bool,
+    /// `null` while GitHub is still computing it.
+    #[serde(default)]
+    mergeable: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +153,8 @@ pub(crate) struct Snapshot {
     pub(crate) feedback: usize,
     /// Labels currently on the PR; the factory routes on two of them.
     pub(crate) labels: Vec<String>,
+    /// `false` means conflicts; `None` means GitHub has not computed it yet.
+    pub(crate) mergeable: Option<bool>,
 }
 
 /// The developer adds this when the work is ready for review.
@@ -346,6 +351,7 @@ fn render_pr(
         open: pr.state == "open",
         feedback: feedback.len(),
         labels: pr.labels.iter().map(|label| label.name.clone()).collect(),
+        mergeable: pr.mergeable,
     }
 }
 

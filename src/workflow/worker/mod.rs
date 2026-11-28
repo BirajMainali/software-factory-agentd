@@ -164,8 +164,23 @@ impl Worker<'_> {
             return Ok(false);
         };
         if snapshot.has_label(github::pr::APPROVED_LABEL) {
-            github::pr::merge(&pr)?;
-            self.record(Event::PullRequestClosed)?;
+            if snapshot.mergeable == Some(true) && github::pr::merge(&pr).is_ok() {
+                self.record(Event::PullRequestClosed)?;
+                return Ok(true);
+            }
+            if snapshot.mergeable.is_some() {
+                // Conflicts, or a merge GitHub refused: the developer fixes it.
+                let _ = github::pr::label(&pr, github::pr::APPROVED_LABEL, false);
+                let _ = github::pr::label(&pr, github::pr::READY_LABEL, false);
+                let number = self.state.next_pr_feedback();
+                self.record(Event::PrFeedbackArrived {
+                    number,
+                    key: snapshot.key,
+                })?;
+                return Ok(true);
+            }
+            // GitHub has not computed mergeability yet: wait for the watch.
+            self.record(Event::PrReady)?;
             return Ok(true);
         }
         if snapshot.has_label(github::pr::READY_LABEL) {
