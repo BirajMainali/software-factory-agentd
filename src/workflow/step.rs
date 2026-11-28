@@ -129,7 +129,8 @@ pub(crate) fn def(step: Step) -> StepDef {
             session: Session::Resume,
             reads: Reads::AllReviews,
             writes: Artifact::Development,
-            next: Some(Step::OpenPullRequest),
+            // Loop: the next check decides whether the PR is ready now.
+            next: Some(Step::Review(ReviewKind::Security)),
             instruction: "Here are the reviews that you need to work on together",
         },
         // Kept so task logs written before reviews were collected still replay.
@@ -192,9 +193,18 @@ impl Step {
         matches!(def(self).session, Session::Fresh)
     }
 
-    /// Every step in route order, following [`Step::next`] from the first.
+    /// The acyclic part of the route, from the first step until a step repeats.
+    /// The route loops through the reviews until the PR is ready.
     pub(crate) fn route() -> impl Iterator<Item = Self> {
-        std::iter::successors(Some(Self::default()), |step| step.next())
+        let mut seen: Vec<Self> = Vec::new();
+        std::iter::successors(Some(Self::default()), |step| step.next()).take_while(move |step| {
+            if seen.contains(step) {
+                false
+            } else {
+                seen.push(*step);
+                true
+            }
+        })
     }
 }
 
@@ -287,7 +297,6 @@ mod tests {
                 Step::Review(ReviewKind::Code),
                 Step::Review(ReviewKind::UiUx),
                 Step::AddressReviews,
-                Step::OpenPullRequest,
             ]
         );
     }

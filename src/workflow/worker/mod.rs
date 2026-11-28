@@ -153,8 +153,8 @@ impl Worker<'_> {
         Ok(())
     }
 
-    /// An open PR ends the route: approved merges, anything else waits for
-    /// feedback. Without a PR the route continues to the internal reviews.
+    /// A ready or approved PR ends the route: approved merges, ready waits for
+    /// feedback. Anything else keeps routing through the internal reviews.
     fn stop_for_pr(&mut self) -> Result<bool, Error> {
         let Some(pr) = self.state.pr().map(str::to_string) else {
             return Ok(false);
@@ -168,8 +168,11 @@ impl Worker<'_> {
             self.record(Event::PullRequestClosed)?;
             return Ok(true);
         }
-        self.record(Event::PrReady)?;
-        Ok(true)
+        if snapshot.has_label(github::pr::READY_LABEL) {
+            self.record(Event::PrReady)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Record the task's PR once a developer step has opened it. Best-effort:

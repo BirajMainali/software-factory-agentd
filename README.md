@@ -14,16 +14,16 @@ reading the issue and the PR. The agents do that work themselves.
 work --issue <url> --path <dir>
         │
         ▼
-plan ─► develop (push, open PR)
-             │
-             ├─ PR opened ──► read labels
-             │                   ├─ factory-approved ──► squash-merge ──► exit
-             │                   └─ anything else ─────► PR review ──► watch
-             │
-             └─ no PR ──────► security ─► code ─► ui/ux ─► address reviews ─► PR
-                                                                                │
-                                     watch ──► new feedback ──► developer ──────┘
-                                                └─ factory-approved ──► merge
+plan ─► develop ─► read the PR labels
+                      ├─ factory-approved ──► squash-merge ──► exit
+                      ├─ factory-ready ─────► PR review ──► watch
+                      └─ neither ─█
+                                  ▼
+             security ─► code ─► ui/ux ─► address reviews ─► develop ─┐
+                        ▲                                            │
+                        └────────────────────────────────────────────┘
+
+watch ──► new feedback ──► remove factory-ready ──► developer (resumes)
 ```
 
 - **One task, one supervisor.** `work` starts a detached supervisor and returns
@@ -142,10 +142,10 @@ pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 | address reviews | `developer` | resumes | the three reviews | `development/<n>-development.md` |
 | PR feedback | `developer` | resumes | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
 
-The developer opens the PR during develop. When a PR is open the route ends there and
-the labels take over; the three reviews run only when develop opened no PR. When new
-feedback arrives, the watch removes `factory-ready` and resumes the same developer
-session for that round. The developer keeps one session from the plan onward.
+After every developer pass the labels decide: `factory-approved` merges,
+`factory-ready` waits for feedback, anything else loops through the three reviews and
+develops again. When new feedback arrives, the watch removes `factory-ready` and
+resumes the same developer session for that round.
 
 Define the five agents wherever opencode resolves its agents. Dummy versions for local
 testing are in this repo's `test/agents/`.
