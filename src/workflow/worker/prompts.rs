@@ -28,10 +28,10 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots)
     }
     if matches!(
         step,
-        Step::DevelopPlan | Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
+        Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
     ) {
         lines.push(format!(
-            "When this round is done and verified, add the `{}` label to the pull request.",
+            "Only when the reviewers are done and every verdict is approved, add the `{}` label to the pull request.",
             crate::github::pr::READY_LABEL
         ));
     }
@@ -109,7 +109,6 @@ mod tests {
             &slots_for(Step::DevelopPlan, 2),
         );
         assert!(prompt.contains("open a PR that references this issue (for example `Fixes #7`)"));
-        assert!(prompt.contains("add the `factory-ready` label to the pull request"));
     }
 
     #[test]
@@ -155,6 +154,7 @@ mod tests {
         );
         assert!(prompt.contains("PR feedback: /work/pr-feedback/2-pr-feedback.md"));
         assert!(prompt.ends_with("/work/development/6-development.md"));
+        assert!(prompt.contains("every verdict is approved, add the `factory-ready` label"));
     }
 
     #[test]
