@@ -108,8 +108,8 @@ pub(crate) fn def(step: Step) -> StepDef {
             session: Session::Fresh,
             reads: Reads::One(Artifact::Plan),
             writes: Artifact::Development,
-            // The PR label decides what happens next; the route has nothing left.
-            next: None,
+            // Only reached when develop opened no PR: review the branch here.
+            next: Some(Step::Review(ReviewKind::Security)),
             instruction: "Here is the plan that you need to implement",
         },
         Step::Review(kind) => StepDef {
@@ -276,11 +276,19 @@ mod tests {
     }
 
     #[test]
-    fn the_route_is_plan_then_develop() {
-        // The PR label, not the route, decides what happens after develop.
+    fn the_route_reviews_only_when_develop_opened_no_pr() {
+        // An open PR ends the route; without one the internal reviews run.
         assert_eq!(
             Step::route().collect::<Vec<_>>(),
-            vec![Step::Plan, Step::Develop]
+            vec![
+                Step::Plan,
+                Step::Develop,
+                Step::Review(ReviewKind::Security),
+                Step::Review(ReviewKind::Code),
+                Step::Review(ReviewKind::UiUx),
+                Step::AddressReviews,
+                Step::OpenPullRequest,
+            ]
         );
     }
 

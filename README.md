@@ -14,14 +14,16 @@ reading the issue and the PR. The agents do that work themselves.
 work --issue <url> --path <dir>
         │
         ▼
-plan ─► develop (push, open PR, label factory-ready) ─► watch PR
-                                                                  │
-                  ┌───────────────────────────────────────────────┤
-                  │                                               │
-       new feedback (ready label removed)          factory-approved label
-                  │                                               │
-                  ▼                                               ▼
-         developer (resumed) ─► label ready              squash-merge ─► exit
+plan ─► develop (push, open PR)
+             │
+             ├─ PR opened ──► read labels
+             │                   ├─ factory-approved ──► squash-merge ──► exit
+             │                   └─ anything else ─────► PR review ──► watch
+             │
+             └─ no PR ──────► security ─► code ─► ui/ux ─► address reviews ─► PR
+                                                                                │
+                                     watch ──► new feedback ──► developer ──────┘
+                                                └─ factory-approved ──► merge
 ```
 
 - **One task, one supervisor.** `work` starts a detached supervisor and returns
@@ -134,12 +136,16 @@ pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 |---|---|---|---|---|
 | plan | `planner` | new | `issue.md` | `plan/<n>-plan.md` |
 | develop | `developer` | new | the plan | `development/<n>-development.md` |
+| security review | `reviewer-security` | new | the pushed branch | `review/<n>-security.md` |
+| code review | `reviewer-code` | new | the pushed branch | `review/<n>-code.md` |
+| ui/ux review | `reviewer-uiux` | new | the pushed branch | `review/<n>-uiux.md` |
+| address reviews | `developer` | resumes | the three reviews | `development/<n>-development.md` |
 | PR feedback | `developer` | resumes | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
 
-The developer opens the PR during develop and adds `factory-ready` when the
-work is done. Review happens on the PR; when new feedback arrives, the watch removes
-the label and resumes the same developer session for that round. The developer keeps
-one session from the plan onward.
+The developer opens the PR during develop. When a PR is open the route ends there and
+the labels take over; the three reviews run only when develop opened no PR. When new
+feedback arrives, the watch removes `factory-ready` and resumes the same developer
+session for that round. The developer keeps one session from the plan onward.
 
 Define the five agents wherever opencode resolves its agents. Dummy versions for local
 testing are in this repo's `test/agents/`.
