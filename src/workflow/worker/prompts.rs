@@ -20,7 +20,7 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots)
     if let Step::Review(kind) = step {
         lines.push(format!("Review: {}", kind.as_str()));
     }
-    if step == Step::DevelopPlan {
+    if step == Step::Develop {
         lines.push(format!(
             "Push the branch and open a PR that references this issue (for example `Fixes #{}`).",
             issue.number
@@ -31,7 +31,7 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots)
         Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
     ) {
         lines.push(format!(
-            "Only when the reviewers are done and every verdict is approved, add the `{}` label to the pull request.",
+            "Only when the reviewers are done and every verdict is approved, resolve any conflicts with the base branch, then add the `{}` label to the pull request.",
             crate::github::pr::READY_LABEL
         ));
     }
@@ -103,10 +103,10 @@ mod tests {
     #[test]
     fn develop_plan_asks_for_a_pr_referencing_the_issue() {
         let prompt = for_step(
-            Step::DevelopPlan,
+            Step::Develop,
             &issue(7),
             Path::new("/work"),
-            &slots_for(Step::DevelopPlan, 2),
+            &slots_for(Step::Develop, 2),
         );
         assert!(prompt.contains("open a PR that references this issue (for example `Fixes #7`)"));
     }
@@ -154,16 +154,14 @@ mod tests {
         );
         assert!(prompt.contains("PR feedback: /work/pr-feedback/2-pr-feedback.md"));
         assert!(prompt.ends_with("/work/development/6-development.md"));
-        assert!(prompt.contains("every verdict is approved, add the `factory-ready` label"));
+        assert!(prompt.contains(
+            "resolve any conflicts with the base branch, then add the `factory-ready` label"
+        ));
     }
 
     #[test]
     fn developer_steps_write_a_development_summary() {
-        let steps = [
-            Step::DevelopPlan,
-            Step::AddressReviews,
-            Step::OpenPullRequest,
-        ];
+        let steps = [Step::Develop, Step::AddressReviews, Step::OpenPullRequest];
         for step in steps {
             assert!(
                 for_step(step, &issue(7), Path::new("/work"), &slots_for(step, 4))

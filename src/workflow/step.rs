@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum Step {
     #[default]
     Plan,
-    #[serde(rename = "develop_plan", alias = "develop")]
-    DevelopPlan,
+    #[serde(rename = "develop", alias = "develop_plan")]
+    Develop,
     Review(ReviewKind),
     #[serde(rename = "develop_review", alias = "apply_review")]
     DevelopReview(ReviewKind),
@@ -100,10 +100,10 @@ pub(crate) fn def(step: Step) -> StepDef {
             session: Session::Fresh,
             reads: Reads::One(Artifact::Issue),
             writes: Artifact::Plan,
-            next: Some(Step::DevelopPlan),
+            next: Some(Step::Develop),
             instruction: "Here is the issue that you need to plan for",
         },
-        Step::DevelopPlan => StepDef {
+        Step::Develop => StepDef {
             agent: Role::Developer,
             session: Session::Fresh,
             reads: Reads::One(Artifact::Plan),
@@ -179,7 +179,7 @@ impl Step {
     pub(crate) fn stage_label(self) -> &'static str {
         match self {
             Self::Plan => "Plan",
-            Self::DevelopPlan
+            Self::Develop
             | Self::AddressReviews
             | Self::DevelopPrFeedback
             | Self::DevelopReview(_) => "Develop",
@@ -266,7 +266,8 @@ mod tests {
 
     #[test]
     fn old_log_step_names_still_replay() {
-        assert_eq!(parse(r#""develop""#), Step::DevelopPlan);
+        assert_eq!(parse(r#""develop_plan""#), Step::Develop);
+        assert_eq!(parse(r#""develop""#), Step::Develop);
         assert_eq!(
             parse(r#"{"apply_review":"code"}"#),
             Step::DevelopReview(ReviewKind::Code)
@@ -279,7 +280,7 @@ mod tests {
         // The PR label, not the route, decides what happens after develop.
         assert_eq!(
             Step::route().collect::<Vec<_>>(),
-            vec![Step::Plan, Step::DevelopPlan]
+            vec![Step::Plan, Step::Develop]
         );
     }
 
@@ -291,8 +292,8 @@ mod tests {
     #[test]
     fn new_logs_name_the_developer_step() {
         assert_eq!(
-            serde_json::to_string(&Step::DevelopPlan).unwrap(),
-            r#""develop_plan""#
+            serde_json::to_string(&Step::Develop).unwrap(),
+            r#""develop""#
         );
         assert_eq!(
             serde_json::to_string(&Step::DevelopReview(ReviewKind::Security)).unwrap(),

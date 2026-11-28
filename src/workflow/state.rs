@@ -260,10 +260,7 @@ mod tests {
         let mut state = TaskState::default();
         assert_eq!(state.slots(Step::Plan, false).write, 1);
         prompt(&mut state, Step::Plan);
-        assert_eq!(
-            state.slots(Step::DevelopPlan, false).read(Artifact::Plan),
-            1
-        );
+        assert_eq!(state.slots(Step::Develop, false).read(Artifact::Plan), 1);
         assert_eq!(state.slots(Step::Plan, false).write, 2);
 
         let code = Step::Review(ReviewKind::Code);
@@ -388,36 +385,36 @@ mod tests {
     #[test]
     fn every_developer_run_gets_its_own_summary_number() {
         let mut state = TaskState::default();
-        assert_eq!(state.slots(Step::DevelopPlan, false).write, 1);
-        prompt(&mut state, Step::DevelopPlan);
+        assert_eq!(state.slots(Step::Develop, false).write, 1);
+        prompt(&mut state, Step::Develop);
         assert_eq!(state.slots(Step::AddressReviews, false).write, 2);
         prompt(&mut state, Step::AddressReviews);
         assert_eq!(state.slots(Step::OpenPullRequest, false).write, 3);
         prompt(&mut state, Step::OpenPullRequest);
-        assert_eq!(state.slots(Step::DevelopPlan, false).write, 4);
+        assert_eq!(state.slots(Step::Develop, false).write, 4);
         assert_eq!(state.slots(Step::OpenPullRequest, true).write, 3);
     }
 
     #[test]
     fn a_retried_step_reuses_its_file_instead_of_numbering_another() {
         let mut state = TaskState::default();
-        assert_eq!(state.slots(Step::DevelopPlan, false).write, 1);
-        prompt(&mut state, Step::DevelopPlan);
+        assert_eq!(state.slots(Step::Develop, false).write, 1);
+        prompt(&mut state, Step::Develop);
 
         state.apply(&Record {
             ts: 1,
             event: Event::SubagentFinished {
-                step: Step::DevelopPlan,
+                step: Step::Develop,
                 outcome: Outcome::Failed,
             },
         });
-        assert_eq!(state.slots(Step::DevelopPlan, false).write, 1);
-        prompt(&mut state, Step::DevelopPlan);
+        assert_eq!(state.slots(Step::Develop, false).write, 1);
+        prompt(&mut state, Step::Develop);
 
         state.apply(&Record {
             ts: 2,
             event: Event::StepCompleted {
-                step: Step::DevelopPlan,
+                step: Step::Develop,
                 next: Some(Step::Review(ReviewKind::Security)),
             },
         });
