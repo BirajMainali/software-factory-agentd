@@ -175,6 +175,21 @@ impl Step {
         def(self).agent
     }
 
+    /// The short name the dashboard shows for this step.
+    pub(crate) fn stage_label(self) -> &'static str {
+        match self {
+            Self::Plan => "Plan",
+            Self::DevelopPlan => "Develop",
+            Self::Review(ReviewKind::Security) => "Security",
+            Self::Review(ReviewKind::Code) => "Code",
+            Self::Review(ReviewKind::UiUx) => "UI/UX",
+            Self::DevelopReview(_) => "Rework",
+            Self::AddressReviews => "Fix",
+            Self::OpenPullRequest => "PR",
+            Self::DevelopPrFeedback => "Feedback",
+        }
+    }
+
     pub(crate) fn starts_session(self) -> bool {
         matches!(def(self).session, Session::Fresh)
     }

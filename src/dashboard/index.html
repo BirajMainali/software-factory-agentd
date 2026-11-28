@@ -31,14 +31,17 @@
   a.icon:hover { color: var(--accent); }
   a.icon svg { width: 16px; height: 16px; }
 
-  .pipeline { display: flex; gap: 3px; }
-  .pipeline span { width: 22px; height: 6px; border-radius: 3px; background: var(--line); }
-  .pipeline span.done { background: var(--good); }
-  .pipeline span.now { background: var(--accent); }
-  .pipeline.stuck span.now { background: var(--bad); }
-  .pipeline.backing_off span.now { background: var(--warn); }
+  .cycle { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .cycle .chip { font-size: .75rem; line-height: 1.5; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .cycle .chip.done { color: var(--good); background: var(--panel); border-color: transparent; }
+  .cycle .chip.now { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .cycle .chip.now.stuck { background: var(--bad); border-color: var(--bad); }
+  .cycle .chip.now.backing_off { background: var(--warn); border-color: var(--warn); }
+  .cycle .note { flex-basis: 100%; font-size: .75rem; color: var(--muted); }
+  .cycle .note.bad { color: var(--bad); }
+  .cycle .note.warn { color: var(--warn); }
+  .cycle .note.you { color: var(--accent); }
   .title { margin-left: .5rem; }
-  .stage { font-size: .8125rem; color: var(--muted); margin-top: 2px; }
   .bad { color: var(--bad); }
   .warn { color: var(--warn); }
   .you { color: var(--accent); font-weight: 600; }
@@ -92,7 +95,7 @@
 
 <table>
   <thead>
-    <tr><th>Repo</th><th>Issue</th><th>Progress</th><th>Now</th><th>Docs</th><th>For</th></tr>
+    <tr><th>Repo</th><th>Issue</th><th>Cycle</th><th>Docs</th><th>For</th></tr>
   </thead>
   <tbody id="tasks"></tbody>
 </table>
@@ -182,20 +185,39 @@
     return "";
   }
 
-  function pipeline(task) {
+  /** The route as chips, with the stage running now lit. */
+  function cycle(task) {
     const wrap = document.createElement("div");
-    const bar = document.createElement("div");
-    bar.className = `pipeline ${held(task)}`;
-    for (let index = 0; index < task.steps; index++) {
-      const segment = document.createElement("span");
-      if (index < task.step) segment.className = "done";
-      else if (index === task.step) segment.className = "now";
-      bar.append(segment);
+    const chips = document.createElement("div");
+    chips.className = "cycle";
+    const state = held(task);
+    for (const [index, name] of (task.stages ?? []).entries()) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      if (!task.agent || index < task.step) chip.classList.add("done");
+      else if (index === task.step) {
+        chip.classList.add("now");
+        if (state) chip.classList.add(state);
+      }
+      chip.textContent = name;
+      chips.append(chip);
     }
-    const label = document.createElement("div");
-    label.className = "stage";
-    label.textContent = task.agent ? `step ${task.step + 1} of ${task.steps}` : "all steps done";
-    wrap.append(bar, label);
+    const done = document.createElement("span");
+    done.className = "chip";
+    if (!task.agent) {
+      done.classList.add("now");
+      if (state) done.classList.add(state);
+    }
+    done.textContent = "Done";
+    chips.append(done);
+    wrap.append(chips);
+    const note = now(task);
+    if (note) {
+      const line = document.createElement("div");
+      line.className = `note ${note[1]}`;
+      line.textContent = note[0];
+      wrap.append(line);
+    }
     return wrap;
   }
 
@@ -206,7 +228,7 @@
     return td;
   }
 
-  /** Plain-words current state, and how to color it. */
+  /** Plain-words state worth showing under the chips, if any. */
   function now(task) {
     if (task.unreadable) return ["log unreadable", "bad"];
     if (held(task) === "stuck") return [`stuck: ${task.last_failure ?? "out of retries"}`, "bad"];
@@ -217,7 +239,7 @@
     if (task.pr_closed) return ["PR closed", "you"];
     if (task.pr && !task.agent) return ["watching PR", ""];
     if (!task.agent) return ["waiting for you", "you"];
-    return [`${task.agent} ${task.running ? "working" : "next"}`, ""];
+    return null;
   }
 
   /** `/doc/<owner>/<repo>/<n>/<path>`; the path came from the server's own list. */
@@ -364,9 +386,7 @@
       if (task.pr) {
         issue.append(" ", iconLink(task.pr, "pull", task.pr_closed ? "Pull request closed" : "Open pull request"));
       }
-      cell(row, pipeline(task));
-      const [text, tone] = now(task);
-      const state = cell(row, text, tone);
+      const state = cell(row, cycle(task));
       if (task.last_failure) state.title = task.last_failure;
       cell(row, docsButton(task, row));
       cell(row, ago(task.since), "num");

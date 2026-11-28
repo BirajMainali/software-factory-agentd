@@ -50,6 +50,8 @@ struct TaskView {
     unreadable: bool,
     step: usize,
     steps: usize,
+    /// Short names of the route's steps, in order, for the cycle display.
+    stages: Vec<&'static str>,
     /// Agent for the current step; `None` once agents are done.
     agent: Option<&'static str>,
     /// The next step's agent is running now.
@@ -182,6 +184,7 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
         unreadable: true,
         step: 0,
         steps: Step::route().count(),
+        stages: Step::route().map(Step::stage_label).collect(),
         agent: None,
         running: false,
         stuck: false,
