@@ -14,7 +14,7 @@ reading the issue and the PR. The agents do that work themselves.
 work --issue <url> --path <dir>
         │
         ▼
-plan ─► develop (push, open PR, label factory-ready-to-review) ─► watch PR
+plan ─► develop (push, open PR, label factory-ready) ─► watch PR
                                                                   │
                   ┌───────────────────────────────────────────────┤
                   │                                               │
@@ -40,7 +40,7 @@ plan ─► develop (push, open PR, label factory-ready-to-review) ─► watch 
   interrupted picks up its own unfinished step instead of starting over. A step
   completion records the step that ran next, so replay follows the route as it was,
   not as it is today.
-- **PR labels.** The developer adds `factory-ready-to-review` when the work is ready;
+- **PR labels.** The developer adds `factory-ready` when the work is ready;
   the route stops and the supervisor watches for feedback. A reviewer adds
   `factory-approved` and the supervisor squash-merges the PR. New feedback removes
   the ready label before the developer is woken.
@@ -136,7 +136,7 @@ pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 | develop | `developer` | new | the plan | `development/<n>-development.md` |
 | PR feedback | `developer` | resumes | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
 
-The developer opens the PR during develop and adds `factory-ready-to-review` when the
+The developer opens the PR during develop and adds `factory-ready` when the
 work is done. Review happens on the PR; when new feedback arrives, the watch removes
 the label and resumes the same developer session for that round. The developer keeps
 one session from the plan onward.

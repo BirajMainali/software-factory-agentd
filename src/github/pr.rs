@@ -153,7 +153,7 @@ pub(crate) struct Snapshot {
 }
 
 /// The developer adds this when the work is ready for review.
-pub(crate) const READY_LABEL: &str = "factory-ready-to-review";
+pub(crate) const READY_LABEL: &str = "factory-ready";
 /// A reviewer adds this to approve; the factory merges the PR.
 pub(crate) const APPROVED_LABEL: &str = "factory-approved";
 
