@@ -48,6 +48,8 @@ pub(crate) struct TaskState {
     pub(crate) history: Vec<Step>,
     /// Fingerprint of the PR feedback already recorded, so the watch does not repeat it.
     feedback_key: Option<String>,
+    /// The key before the latest round; its time bounds what the round shows.
+    prior_feedback_key: Option<String>,
     /// Failed worker exits since the last progress.
     pub(crate) failures: u32,
     pub(crate) last_failure_at: u64,
@@ -121,6 +123,7 @@ impl TaskState {
             Event::PullRequestClosed => self.pr_closed = true,
             Event::PrFeedbackArrived { number, key } => {
                 self.runs.insert(Artifact::PrFeedback, *number);
+                self.prior_feedback_key.clone_from(&self.feedback_key);
                 self.feedback_key = Some(key.clone());
                 self.retry = false;
                 self.step = Step::DevelopPrFeedback;
@@ -185,6 +188,15 @@ impl TaskState {
 
     pub(crate) fn feedback_key(&self) -> Option<&str> {
         self.feedback_key.as_deref()
+    }
+
+    /// The time of the last feedback the developer was given, if any.
+    pub(crate) fn feedback_since(&self) -> Option<&str> {
+        self.prior_feedback_key
+            .as_deref()
+            .and_then(|key| key.split_once(':'))
+            .map(|(_, time)| time)
+            .filter(|time| !time.is_empty())
     }
 
     pub(crate) fn pr(&self) -> Option<&str> {
@@ -345,6 +357,7 @@ mod tests {
         );
         assert_eq!(state.next_pr_feedback(), 2);
         assert_eq!(state.feedback_key(), Some("1:2026-01-01T00:00:00Z"));
+        assert_eq!(state.feedback_since(), None);
 
         state.apply(&Record {
             ts: 3,
@@ -364,6 +377,7 @@ mod tests {
             2
         );
         assert_eq!(state.next_pr_feedback(), 3);
+        assert_eq!(state.feedback_since(), Some("2026-01-01T00:00:00Z"));
     }
 
     #[test]

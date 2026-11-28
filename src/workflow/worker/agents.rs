@@ -21,7 +21,8 @@ impl Worker<'_> {
             // The watch recorded new feedback: put this round in the file we point at.
             let pr = github::pr::for_issue(&self.issue)?
                 .ok_or_else(|| Error::NoPullRequest(self.issue.clone()))?;
-            let snapshot = github::pr::fetch(&pr)?;
+            // Only what the previous round did not already give the developer.
+            let snapshot = github::pr::fetch_since(&pr, self.state.feedback_since())?;
             let read = prompts::file(
                 &self.dir,
                 Artifact::PrFeedback,

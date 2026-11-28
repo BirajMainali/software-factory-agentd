@@ -158,6 +158,12 @@ pub(crate) struct Snapshot {
 /// Returns an error if the reference is not a pull request, `gh` fails, or its JSON
 /// is invalid.
 pub(crate) fn fetch(pr_ref: &GitHubUrl) -> Result<Snapshot, Error> {
+    fetch_since(pr_ref, None)
+}
+
+/// Like [`fetch`], but only renders feedback newer than `since` (an RFC3339 time).
+/// Bounds a feedback round to what the developer has not been given yet.
+pub(crate) fn fetch_since(pr_ref: &GitHubUrl, since: Option<&str>) -> Result<Snapshot, Error> {
     pr_ref.expect_pull()?;
     let pr: PullRequest = gh_json(
         "api",
@@ -171,7 +177,7 @@ pub(crate) fn fetch(pr_ref: &GitHubUrl) -> Result<Snapshot, Error> {
         fetch_pages(pr_ref, &format!("pulls/{}/comments", pr_ref.number))?;
     let comments: Vec<IssueComment> =
         fetch_pages(pr_ref, &format!("issues/{}/comments", pr_ref.number))?;
-    Ok(render_pr(&pr, &reviews, &review_comments, &comments))
+    Ok(render_pr(&pr, &reviews, &review_comments, &comments, since))
 }
 
 /// The newest pull request that cross-references `issue`, if any.
@@ -236,6 +242,7 @@ fn render_pr(
     reviews: &[Review],
     review_comments: &[ReviewComment],
     comments: &[IssueComment],
+    since: Option<&str>,
 ) -> Snapshot {
     let mut feedback = Vec::with_capacity(reviews.len() + review_comments.len() + comments.len());
     feedback.extend(reviews.iter().map(Feedback::Review));
@@ -283,60 +290,25 @@ fn render_pr(
     out.push_str("\n## Body\n\n");
     push_verbatim(&mut out, pr.body.as_deref().unwrap_or(""));
 
-    let _ = writeln!(out, "\n## Feedback ({})", feedback.len());
-    if feedback.is_empty() {
-        out.push_str("\n_No reviews or comments._\n");
+    // One round only needs what the previous round did not show.
+    let shown: Vec<&Feedback> = feedback
+        .iter()
+        .filter(|item| is_new(item.timestamp(), since))
+        .collect();
+    match since.filter(|ts| !ts.is_empty()) {
+        Some(ts) => {
+            let _ = writeln!(out, "\n## New feedback since {ts} ({})", shown.len());
+        }
+        None => {
+            let _ = writeln!(out, "\n## Feedback ({})", shown.len());
+        }
+    }
+    if shown.is_empty() {
+        out.push_str("\n_No new reviews or comments._\n");
     }
 
-    for (index, item) in feedback.iter().enumerate() {
-        let number = index + 1;
-        let timestamp = item.timestamp().unwrap_or("pending");
-        match item {
-            Feedback::Review(review) => {
-                let _ = writeln!(
-                    out,
-                    "\n### {number}. {timestamp} - review by @{} ({})",
-                    author_login(review.user.as_ref()),
-                    review.state
-                );
-                if let Some(commit) = &review.commit_id {
-                    let _ = writeln!(out, "Commit: {commit}");
-                }
-                out.push('\n');
-                push_body(&mut out, review.body.as_deref());
-            }
-            Feedback::ReviewComment(comment) => {
-                let _ = writeln!(
-                    out,
-                    "\n### {number}. {timestamp} - review comment by @{} on {}",
-                    author_login(comment.user.as_ref()),
-                    review_location(comment)
-                );
-                if let Some(parent) = comment.in_reply_to_id {
-                    let _ = writeln!(out, "In reply to: {parent}");
-                }
-                out.push('\n');
-                push_body(&mut out, comment.body.as_deref());
-
-                if let Some(hunk) = comment.diff_hunk.as_deref().filter(|hunk| !hunk.is_empty()) {
-                    out.push_str("\n```diff\n");
-                    out.push_str(hunk);
-                    if !hunk.ends_with('\n') {
-                        out.push('\n');
-                    }
-                    out.push_str("```\n");
-                }
-            }
-            Feedback::Comment(comment) => {
-                let _ = writeln!(
-                    out,
-                    "\n### {number}. {timestamp} - comment by @{}",
-                    author_login(comment.user.as_ref())
-                );
-                out.push('\n');
-                push_body(&mut out, comment.body.as_deref());
-            }
-        }
+    for (index, item) in shown.iter().enumerate() {
+        push_item(&mut out, index + 1, item);
     }
 
     Snapshot {
@@ -351,6 +323,66 @@ fn render_pr(
 /// latest one was submitted.
 // shortcut: edited bodies keep the same count and timestamp, so they do not wake
 // the developer; watch bodies too if that must route back.
+/// One review or comment, under its number in the list.
+fn push_item(out: &mut String, number: usize, item: &Feedback<'_>) {
+    let timestamp = item.timestamp().unwrap_or("pending");
+    match item {
+        Feedback::Review(review) => {
+            let _ = writeln!(
+                out,
+                "\n### {number}. {timestamp} - review by @{} ({})",
+                author_login(review.user.as_ref()),
+                review.state
+            );
+            if let Some(commit) = &review.commit_id {
+                let _ = writeln!(out, "Commit: {commit}");
+            }
+            out.push('\n');
+            push_body(out, review.body.as_deref());
+        }
+        Feedback::ReviewComment(comment) => {
+            let _ = writeln!(
+                out,
+                "\n### {number}. {timestamp} - review comment by @{} on {}",
+                author_login(comment.user.as_ref()),
+                review_location(comment)
+            );
+            if let Some(parent) = comment.in_reply_to_id {
+                let _ = writeln!(out, "In reply to: {parent}");
+            }
+            out.push('\n');
+            push_body(out, comment.body.as_deref());
+
+            if let Some(hunk) = comment.diff_hunk.as_deref().filter(|hunk| !hunk.is_empty()) {
+                out.push_str("\n```diff\n");
+                out.push_str(hunk);
+                if !hunk.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("```\n");
+            }
+        }
+        Feedback::Comment(comment) => {
+            let _ = writeln!(
+                out,
+                "\n### {number}. {timestamp} - comment by @{}",
+                author_login(comment.user.as_ref())
+            );
+            out.push('\n');
+            push_body(out, comment.body.as_deref());
+        }
+    }
+}
+
+/// Whether feedback at `timestamp` came after the cutoff `since`.
+fn is_new(timestamp: Option<&str>, since: Option<&str>) -> bool {
+    match (since, timestamp) {
+        (None, _) => true,
+        (Some(since), Some(timestamp)) => timestamp > since,
+        (Some(_), None) => false,
+    }
+}
+
 fn feedback_key(feedback: &[Feedback<'_>]) -> String {
     let latest = feedback
         .iter()
@@ -390,6 +422,26 @@ mod tests {
         fs::write(dir.join("notes.md"), "not feedback").unwrap();
         assert_eq!(next_number(&dir).unwrap(), 4);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_feedback_after_the_cutoff_is_new() {
+        // (timestamp, since)
+        assert!(is_new(None, None));
+        assert!(is_new(Some("2026-01-01T00:00:00Z"), None));
+        assert!(!is_new(None, Some("2026-01-01T00:00:00Z")));
+        assert!(is_new(
+            Some("2026-01-02T00:00:00Z"),
+            Some("2026-01-01T00:00:00Z")
+        ));
+        assert!(!is_new(
+            Some("2026-01-01T00:00:00Z"),
+            Some("2026-01-02T00:00:00Z")
+        ));
+        assert!(!is_new(
+            Some("2026-01-02T00:00:00Z"),
+            Some("2026-01-02T00:00:00Z")
+        ));
     }
 
     #[test]
