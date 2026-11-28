@@ -50,6 +50,8 @@ struct TaskView {
     unreadable: bool,
     step: usize,
     steps: usize,
+    /// Pass through the route; 1 for the first, 2+ after PR feedback.
+    round: u32,
     /// Short names of the route's steps, in order, for the cycle display.
     stages: Vec<&'static str>,
     /// Agent for the current step; `None` once agents are done.
@@ -184,6 +186,7 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
         unreadable: true,
         step: 0,
         steps: Step::route().count(),
+        round: 1,
         stages: Step::route().map(Step::stage_label).collect(),
         agent: None,
         running: false,
@@ -206,6 +209,7 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     // PR feedback rounds repeat after the route is done; count one more step then.
     view.steps += usize::from(state.current() == Some(Step::DevelopPrFeedback));
     view.step = state.completed().len();
+    view.round = state.round();
     view.agent = state.current().map(|step| step.role().agent());
     view.running = state.turn.is_some();
     view.stuck = state.is_stuck();
