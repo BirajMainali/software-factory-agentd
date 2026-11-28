@@ -127,8 +127,9 @@ fn watch(
             thread::sleep(WATCH_INTERVAL);
             continue;
         };
-        if snapshot.has_label(github::pr::APPROVED_LABEL) {
-            github::pr::merge(pr)?;
+        // A failed merge (conflicts, branch protection) must not end the watch;
+        // try again next tick and leave the PR to a human.
+        if snapshot.has_label(github::pr::APPROVED_LABEL) && github::pr::merge(pr).is_ok() {
             append(home, issue, Event::PullRequestClosed)?;
             return Ok(Watch::Closed);
         }
