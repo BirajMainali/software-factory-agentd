@@ -10,5 +10,4 @@ mod worker;
 pub(crate) use event::Event;
 pub(crate) use log::{Error as LogError, Log, now, read as read_log};
 pub(crate) use state::TaskState;
-pub(crate) use step::Step;
 pub(crate) use worker::{Error as WorkerError, Worker};

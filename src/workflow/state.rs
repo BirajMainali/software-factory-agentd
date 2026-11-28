@@ -44,6 +44,8 @@ pub(crate) struct TaskState {
     /// The last turn ended without completing its step, so its retry reuses the
     /// attempt's file instead of numbering a new one.
     retry: bool,
+    /// Steps that completed, in order. Repeats are the loop the task went through.
+    pub(crate) history: Vec<Step>,
     /// Fingerprint of the PR feedback already recorded, so the watch does not repeat it.
     feedback_key: Option<String>,
     /// Failed worker exits since the last progress.
@@ -102,6 +104,7 @@ impl TaskState {
             Event::StepCompleted { step, next } => {
                 self.turn = None;
                 self.retry = false;
+                self.history.push(*step);
                 match next.or_else(|| replayed_next(*step)) {
                     Some(next) => self.step = next,
                     None => self.finished = true,
@@ -182,12 +185,6 @@ impl TaskState {
 
     pub(crate) fn feedback_key(&self) -> Option<&str> {
         self.feedback_key.as_deref()
-    }
-
-    /// Which pass through the route the task is on; the first is 1. One round
-    /// per `pr-feedback/<n>-pr-feedback.md`, so the number is the file's prefix.
-    pub(crate) fn round(&self) -> u32 {
-        self.next_pr_feedback()
     }
 
     pub(crate) fn pr(&self) -> Option<&str> {
@@ -348,7 +345,6 @@ mod tests {
         );
         assert_eq!(state.next_pr_feedback(), 2);
         assert_eq!(state.feedback_key(), Some("1:2026-01-01T00:00:00Z"));
-        assert_eq!(state.round(), 2);
 
         state.apply(&Record {
             ts: 3,
@@ -368,7 +364,6 @@ mod tests {
             2
         );
         assert_eq!(state.next_pr_feedback(), 3);
-        assert_eq!(state.round(), 3);
     }
 
     #[test]

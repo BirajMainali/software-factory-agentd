@@ -37,7 +37,6 @@
   .cycle .chip.now { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
   .cycle .chip.now.stuck { background: var(--bad); border-color: var(--bad); }
   .cycle .chip.now.backing_off { background: var(--warn); border-color: var(--warn); }
-  .cycle .chip.round { border-style: dashed; }
   .cycle .note { flex-basis: 100%; font-size: .75rem; color: var(--muted); }
   .cycle .note.bad { color: var(--bad); }
   .cycle .note.warn { color: var(--warn); }
@@ -193,31 +192,17 @@
     chips.className = "cycle";
     const state = held(task);
     const stages = task.stages ?? [];
-    if (task.round > 1) {
-      const round = document.createElement("span");
-      round.className = "chip round";
-      round.textContent = `Round ${task.round}`;
-      round.title = "Each PR feedback round runs the whole route again";
-      chips.append(round);
-    }
+    const current = task.current ?? null;
     for (const [index, name] of stages.entries()) {
       const chip = document.createElement("span");
       chip.className = "chip";
-      if (!task.agent || index < task.step) chip.classList.add("done");
-      else if (index === task.step) {
+      if (current === null || index < current) chip.classList.add("done");
+      else if (index === current) {
         chip.classList.add("now");
         if (state) chip.classList.add(state);
       }
       chip.textContent = name;
       chips.append(chip);
-    }
-    if (task.agent && task.step >= stages.length) {
-      // The PR-feedback step sits outside the route, after the PR is ready.
-      const feedback = document.createElement("span");
-      feedback.className = "chip now";
-      if (state) feedback.classList.add(state);
-      feedback.textContent = "PR feedback";
-      chips.append(feedback);
     }
     const done = document.createElement("span");
     done.className = "chip";

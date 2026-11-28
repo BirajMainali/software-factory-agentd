@@ -5,7 +5,7 @@
 
 use crate::github::GitHubUrl;
 use crate::home;
-use crate::workflow::{self, Step, TaskState};
+use crate::workflow::{self, TaskState};
 use pulldown_cmark::{Event, Options, Parser, html};
 use serde::Serialize;
 use serde_json::json;
@@ -48,12 +48,10 @@ struct TaskView {
     title: Option<String>,
     /// The log could not be read; nothing else is known.
     unreadable: bool,
-    step: usize,
-    steps: usize,
-    /// Pass through the route; 1 for the first, 2+ after PR feedback.
-    round: u32,
-    /// Short names of the route's steps, in order, for the cycle display.
+    /// Stages that ran, in order; repeats show each pass through the route.
     stages: Vec<&'static str>,
+    /// Index of the stage running now; `None` once the task is finished.
+    current: Option<usize>,
     /// Agent for the current step; `None` once agents are done.
     agent: Option<&'static str>,
     /// The next step's agent is running now.
@@ -184,10 +182,8 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
         number: issue.number.to_string(),
         title: None,
         unreadable: true,
-        step: 0,
-        steps: Step::route().count(),
-        round: 1,
-        stages: Step::route().map(Step::stage_label).collect(),
+        stages: Vec::new(),
+        current: None,
         agent: None,
         running: false,
         stuck: false,
@@ -206,10 +202,15 @@ fn view(home: &Path, issue: &GitHubUrl) -> TaskView {
     let state = TaskState::replay(&records);
     view.unreadable = false;
     view.title.clone_from(&state.title);
-    // PR feedback rounds repeat after the route is done; count one more step then.
-    view.steps += usize::from(state.current() == Some(Step::DevelopPrFeedback));
-    view.step = state.completed().len();
-    view.round = state.round();
+    let mut labels: Vec<&'static str> = Vec::new();
+    for step in state.history.iter().chain(state.current().iter()) {
+        let label = step.stage_label();
+        if labels.last().copied() != Some(label) {
+            labels.push(label);
+        }
+    }
+    view.current = (!state.is_finished()).then(|| labels.len().saturating_sub(1));
+    view.stages = labels;
     view.agent = state.current().map(|step| step.role().agent());
     view.running = state.turn.is_some();
     view.stuck = state.is_stuck();

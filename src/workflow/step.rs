@@ -179,14 +179,12 @@ impl Step {
     pub(crate) fn stage_label(self) -> &'static str {
         match self {
             Self::Plan => "Plan",
-            Self::DevelopPlan => "Develop",
-            Self::Review(ReviewKind::Security) => "Security review",
-            Self::Review(ReviewKind::Code) => "Code review",
-            Self::Review(ReviewKind::UiUx) => "UI/UX review",
-            Self::DevelopReview(_) => "Rework",
-            Self::AddressReviews => "Address reviews",
-            Self::OpenPullRequest => "Pull request",
-            Self::DevelopPrFeedback => "PR feedback",
+            Self::DevelopPlan
+            | Self::AddressReviews
+            | Self::DevelopPrFeedback
+            | Self::DevelopReview(_) => "Develop",
+            Self::Review(_) => "Review",
+            Self::OpenPullRequest => "PR",
         }
     }
 
