@@ -126,7 +126,6 @@ impl TaskState {
                 self.runs.insert(Artifact::PrFeedback, *number);
                 self.prior_feedback_key.clone_from(&self.feedback_key);
                 self.feedback_key = Some(key.clone());
-                self.display.push("Review");
                 self.retry = false;
                 self.step = Step::DevelopPrFeedback;
                 self.finished = false;
@@ -134,7 +133,7 @@ impl TaskState {
             }
             Event::PrReady => {
                 self.finished = true;
-                self.display.push("Wait");
+                self.display.push("Ready");
             }
             Event::WorkerFailed { reason } => self.last_failure = Some(reason.clone()),
             Event::WorkerExited { code } => {
