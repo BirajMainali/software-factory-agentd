@@ -44,8 +44,6 @@ pub(crate) struct TaskState {
     /// The last turn ended without completing its step, so its retry reuses the
     /// attempt's file instead of numbering a new one.
     retry: bool,
-    /// Rounds of PR feedback seen; each starts the route again.
-    rounds: u32,
     /// Fingerprint of the PR feedback already recorded, so the watch does not repeat it.
     feedback_key: Option<String>,
     /// Failed worker exits since the last progress.
@@ -122,7 +120,6 @@ impl TaskState {
                 self.runs.insert(Artifact::PrFeedback, *number);
                 self.feedback_key = Some(key.clone());
                 self.retry = false;
-                self.rounds += 1;
                 self.step = Step::DevelopPrFeedback;
                 self.finished = false;
                 self.step_since = record.ts;
@@ -187,9 +184,10 @@ impl TaskState {
         self.feedback_key.as_deref()
     }
 
-    /// Which pass through the route the task is on; the first is 1.
+    /// Which pass through the route the task is on; the first is 1. One round
+    /// per `pr-feedback/<n>-pr-feedback.md`, so the number is the file's prefix.
     pub(crate) fn round(&self) -> u32 {
-        self.rounds + 1
+        self.next_pr_feedback()
     }
 
     pub(crate) fn pr(&self) -> Option<&str> {
