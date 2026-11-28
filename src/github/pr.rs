@@ -1,7 +1,7 @@
 //! Fetch a GitHub pull request with its reviews and comments as Markdown.
 
 use crate::github::{
-    Error, GitHubUrl, Label, User, author_login, gh_json, label_names, push_verbatim,
+    Error, GitHubUrl, Label, User, author_login, gh, gh_json, label_names, push_verbatim,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use std::cmp::Ordering;
@@ -148,6 +148,35 @@ pub(crate) struct Snapshot {
     pub(crate) open: bool,
     /// Reviews and comments already on the PR.
     pub(crate) feedback: usize,
+    /// Labels currently on the PR; the factory routes on two of them.
+    pub(crate) labels: Vec<String>,
+}
+
+/// The developer adds this when the work is ready for review.
+pub(crate) const READY_LABEL: &str = "factory-ready-to-review";
+/// A reviewer adds this to approve; the factory merges the PR.
+pub(crate) const APPROVED_LABEL: &str = "factory-approved";
+
+impl Snapshot {
+    pub(crate) fn has_label(&self, label: &str) -> bool {
+        self.labels.iter().any(|name| name == label)
+    }
+}
+
+/// Add or remove a label on a PR.
+pub(crate) fn label(pr_ref: &GitHubUrl, name: &str, on: bool) -> Result<(), Error> {
+    let flag = if on { "--add-label" } else { "--remove-label" };
+    gh("pr edit", &["pr", "edit", &pr_ref.to_string(), flag, name])?;
+    Ok(())
+}
+
+/// Squash-merge the PR, matching how the repositories merge.
+pub(crate) fn merge(pr_ref: &GitHubUrl) -> Result<(), Error> {
+    gh(
+        "pr merge",
+        &["pr", "merge", &pr_ref.to_string(), "--squash"],
+    )?;
+    Ok(())
 }
 
 /// Fetch a pull request with `gh` and render it as Markdown: body, reviews, inline
@@ -316,6 +345,7 @@ fn render_pr(
         markdown: out,
         open: pr.state == "open",
         feedback: feedback.len(),
+        labels: pr.labels.iter().map(|label| label.name.clone()).collect(),
     }
 }
 

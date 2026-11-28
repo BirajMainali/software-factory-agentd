@@ -130,6 +130,7 @@ impl TaskState {
                 self.finished = false;
                 self.step_since = record.ts;
             }
+            Event::PrReady => self.finished = true,
             Event::WorkerFailed { reason } => self.last_failure = Some(reason.clone()),
             Event::WorkerExited { code } => {
                 if *code != Some(0) {
@@ -417,6 +418,16 @@ mod tests {
             },
         });
         assert_eq!(state.slots(Step::AddressReviews, false).write, 2);
+    }
+
+    #[test]
+    fn a_ready_label_ends_the_route() {
+        let mut state = TaskState::default();
+        state.apply(&Record {
+            ts: 1,
+            event: Event::PrReady,
+        });
+        assert!(state.is_finished());
     }
 
     #[test]

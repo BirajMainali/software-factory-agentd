@@ -47,6 +47,10 @@ plan ─► develop (push, draft PR) ─► security ─► code ─► ui/ux
   interrupted picks up its own unfinished step instead of starting over. A step
   completion records the step that ran next, so replay follows the route as it was,
   not as it is today.
+- **PR labels.** The developer adds `factory-ready-to-review` when the work is ready;
+  the route stops and the supervisor watches for feedback. A reviewer adds
+  `factory-approved` and the supervisor squash-merges the PR. New feedback removes
+  the ready label before the developer is woken.
 - **Failure handling.** A failed agent run is retried with backoff. After three
   consecutive failures the task is left for a human; the supervisor stays alive and
   keeps watching the PR.

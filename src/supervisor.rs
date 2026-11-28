@@ -127,11 +127,20 @@ fn watch(
             thread::sleep(WATCH_INTERVAL);
             continue;
         };
+        if snapshot.has_label(github::pr::APPROVED_LABEL) {
+            github::pr::merge(pr)?;
+            append(home, issue, Event::PullRequestClosed)?;
+            return Ok(Watch::Closed);
+        }
         if !snapshot.open {
             append(home, issue, Event::PullRequestClosed)?;
             return Ok(Watch::Closed);
         }
         if state.feedback_key() != Some(snapshot.key.as_str()) {
+            // This round is being worked on again: it is no longer ready to review.
+            if snapshot.has_label(github::pr::READY_LABEL) {
+                let _ = github::pr::label(pr, github::pr::READY_LABEL, false);
+            }
             let number = state.next_pr_feedback();
             append(
                 home,

@@ -22,8 +22,17 @@ pub(super) fn for_step(step: Step, issue: &GitHubUrl, dir: &Path, slots: &Slots)
     }
     if step == Step::DevelopPlan {
         lines.push(format!(
-            "Push the branch and open a draft PR that references this issue (for example `Fixes #{}`).",
+            "Push the branch and open a PR that references this issue (for example `Fixes #{}`).",
             issue.number
+        ));
+    }
+    if matches!(
+        step,
+        Step::AddressReviews | Step::DevelopPrFeedback | Step::OpenPullRequest
+    ) {
+        lines.push(format!(
+            "When every review is addressed, add the `{}` label to the pull request.",
+            crate::github::pr::READY_LABEL
         ));
     }
     lines.push(format!(
@@ -92,16 +101,14 @@ mod tests {
     }
 
     #[test]
-    fn develop_plan_asks_for_a_draft_pr_referencing_the_issue() {
+    fn develop_plan_asks_for_a_pr_referencing_the_issue() {
         let prompt = for_step(
             Step::DevelopPlan,
             &issue(7),
             Path::new("/work"),
             &slots_for(Step::DevelopPlan, 2),
         );
-        assert!(
-            prompt.contains("open a draft PR that references this issue (for example `Fixes #7`)")
-        );
+        assert!(prompt.contains("open a PR that references this issue (for example `Fixes #7`)"));
     }
 
     #[test]

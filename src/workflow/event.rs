@@ -32,6 +32,8 @@ pub(crate) enum Event {
         step: Step,
         outcome: Outcome,
     },
+    /// The PR is labeled ready: stop the route and wait for feedback.
+    PrReady,
     /// `step` is done; [`Step::next`] runs.
     StepCompleted {
         step: Step,

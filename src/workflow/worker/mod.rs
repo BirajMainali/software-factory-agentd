@@ -144,9 +144,34 @@ impl Worker<'_> {
                 // Record it as soon as the first push opens the PR, so the
                 // dashboard links it while the reviews still run.
                 self.record_pr()?;
+                // The labels on the PR can end the route early.
+                if self.stop_for_pr()? {
+                    return Ok(());
+                }
             }
         }
         Ok(())
+    }
+
+    /// A labeled PR ends the route: approved merges, ready waits for feedback.
+    fn stop_for_pr(&mut self) -> Result<bool, Error> {
+        let Some(pr) = self.state.pr().map(str::to_string) else {
+            return Ok(false);
+        };
+        let pr: GitHubUrl = pr.parse()?;
+        let Ok(snapshot) = github::pr::fetch(&pr) else {
+            return Ok(false);
+        };
+        if snapshot.has_label(github::pr::APPROVED_LABEL) {
+            github::pr::merge(&pr)?;
+            self.record(Event::PullRequestClosed)?;
+            return Ok(true);
+        }
+        if snapshot.has_label(github::pr::READY_LABEL) {
+            self.record(Event::PrReady)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Record the task's PR once a developer step has opened it. Best-effort:

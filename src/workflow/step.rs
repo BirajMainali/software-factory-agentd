@@ -150,7 +150,7 @@ pub(crate) fn def(step: Step) -> StepDef {
             reads: Reads::None,
             writes: Artifact::Development,
             next: None,
-            instruction: "All reviews are addressed, mark the pull request ready for",
+            instruction: "All reviews are addressed, label the pull request ready for",
         },
         Step::DevelopPrFeedback => StepDef {
             agent: Role::Developer,
