@@ -339,7 +339,8 @@ mod tests {
                 step: Step::DevelopPrFeedback,
             },
         });
-        assert!(state.is_finished());
+        // The new head is reviewed again before the task goes back to the watch.
+        assert_eq!(state.current(), Some(Step::Review(ReviewKind::Security)));
 
         state.apply(&arrived(2, "2:2026-01-02T00:00:00Z"));
         assert_eq!(

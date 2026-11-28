@@ -157,7 +157,9 @@ pub(crate) fn def(step: Step) -> StepDef {
             session: Session::Resume,
             reads: Reads::One(Artifact::PrFeedback),
             writes: Artifact::Development,
-            next: None,
+            // The change the reviewer saw has moved: review the new code before
+            // it goes back to the watch.
+            next: Some(Step::Review(ReviewKind::Security)),
             instruction: "Here is the PR feedback that you need to work on",
         },
     }
@@ -266,6 +268,23 @@ mod tests {
             vec![
                 Step::Plan,
                 Step::DevelopPlan,
+                Step::Review(ReviewKind::Security),
+                Step::Review(ReviewKind::Code),
+                Step::Review(ReviewKind::UiUx),
+                Step::AddressReviews,
+                Step::OpenPullRequest,
+            ]
+        );
+    }
+
+    #[test]
+    fn pr_feedback_is_reviewed_again_before_the_pr_is_watched() {
+        let after_feedback: Vec<_> =
+            std::iter::successors(Some(Step::DevelopPrFeedback), |step| step.next()).collect();
+        assert_eq!(
+            after_feedback,
+            vec![
+                Step::DevelopPrFeedback,
                 Step::Review(ReviewKind::Security),
                 Step::Review(ReviewKind::Code),
                 Step::Review(ReviewKind::UiUx),

@@ -21,7 +21,13 @@ plan ─► develop (push, draft PR) ─► security ─► code ─► ui/ux
                               developer marks the PR ready
                                                     │
                                                     ▼
-                              watch PR ─► new feedback ─► developer ─► watch PR
+                              watch PR ─► new feedback ─► developer
+                                       │                    └─► security ─► code ─► ui/ux
+                                       │                                        │
+                                       │                    developer addresses all three
+                                       │                    developer marks the PR ready
+                                       │                                        │
+                                       └──────────────◄─────────────────────────┘
                                        └─ merged/closed ─► exit
 ```
 
@@ -138,6 +144,9 @@ pr-feedback/<n>-pr-feedback.md   PR reviews/comments, one per feedback round
 | address reviews | `developer` | resumes | the three reviews | `development/<n>-development.md` |
 | PR ready | `developer` | resumes | — | `development/<n>-development.md` |
 | PR feedback | `developer` | resumes | `pr-feedback/<n>-pr-feedback.md` | `development/<n>-development.md` |
+
+A PR feedback round re-runs the three reviews on the new head, then the developer
+addresses them and marks the PR ready again, before the PR goes back to the watch.
 
 The three reviews are collected before the developer runs, so one pass addresses all of
 them. The developer keeps one session from the plan onward and is resumed for reviews
