@@ -35,6 +35,10 @@ pub(crate) enum Event {
     /// `step` is done; [`Step::next`] runs.
     StepCompleted {
         step: Step,
+        /// The step that ran next when this was recorded. Absent in logs written
+        /// before the field existed, which replay with the old route instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<Step>,
     },
     /// The folder this worker writes artifacts to, recorded when it starts.
     WorkPath {

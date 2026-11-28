@@ -52,7 +52,10 @@ impl Worker<'_> {
         self.quiet_main()?;
         self.record(Event::SubagentFinished { step, outcome })?;
         match outcome {
-            Outcome::Succeeded => self.record(Event::StepCompleted { step }),
+            Outcome::Succeeded => self.record(Event::StepCompleted {
+                step,
+                next: step.next(),
+            }),
             Outcome::Failed | Outcome::Interrupted => Err(Error::SubagentEnded {
                 role: step.role(),
                 outcome,

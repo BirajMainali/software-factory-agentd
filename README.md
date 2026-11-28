@@ -44,7 +44,9 @@ plan ─► develop (push, draft PR) ─► security ─► code ─► ui/ux
   numbering another file.
 - **State.** Every step appends to `$HOME_REPO_PATH/tasks/<owner>/<repo>/<n>/events.jsonl`.
   All state is replayed from that log, including after a crash. A run that was
-  interrupted picks up its own unfinished step instead of starting over.
+  interrupted picks up its own unfinished step instead of starting over. A step
+  completion records the step that ran next, so replay follows the route as it was,
+  not as it is today.
 - **Failure handling.** A failed agent run is retried with backoff. After three
   consecutive failures the task is left for a human; the supervisor stays alive and
   keeps watching the PR.

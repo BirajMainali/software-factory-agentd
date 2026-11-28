@@ -99,10 +99,10 @@ impl TaskState {
                     self.retry = true;
                 }
             }
-            Event::StepCompleted { step } => {
+            Event::StepCompleted { step, next } => {
                 self.turn = None;
                 self.retry = false;
-                match step.next() {
+                match next.or_else(|| replayed_next(*step)) {
                     Some(next) => self.step = next,
                     None => self.finished = true,
                 }
@@ -210,6 +210,15 @@ impl TaskState {
     }
 }
 
+/// The successor a log written before `StepCompleted.next` implies. The only
+/// edge that changed is the PR feedback, which used to end the route.
+fn replayed_next(step: Step) -> Option<Step> {
+    match step {
+        Step::DevelopPrFeedback => None,
+        other => other.next(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +320,7 @@ mod tests {
             ts: 1,
             event: Event::StepCompleted {
                 step: Step::OpenPullRequest,
+                next: None,
             },
         });
         assert!(state.is_finished());
@@ -337,6 +347,7 @@ mod tests {
             ts: 3,
             event: Event::StepCompleted {
                 step: Step::DevelopPrFeedback,
+                next: Some(Step::Review(ReviewKind::Security)),
             },
         });
         // The new head is reviewed again before the task goes back to the watch.
@@ -385,8 +396,33 @@ mod tests {
             ts: 2,
             event: Event::StepCompleted {
                 step: Step::DevelopPlan,
+                next: Some(Step::Review(ReviewKind::Security)),
             },
         });
         assert_eq!(state.slots(Step::AddressReviews, false).write, 2);
+    }
+
+    #[test]
+    fn an_old_feedback_round_replays_as_finished() {
+        // Logs written before the review loop have no `next`; they ended here.
+        let mut old = TaskState::default();
+        old.apply(&Record {
+            ts: 1,
+            event: Event::StepCompleted {
+                step: Step::DevelopPrFeedback,
+                next: None,
+            },
+        });
+        assert!(old.is_finished());
+
+        let mut current = TaskState::default();
+        current.apply(&Record {
+            ts: 1,
+            event: Event::StepCompleted {
+                step: Step::DevelopPrFeedback,
+                next: Some(Step::Review(ReviewKind::Security)),
+            },
+        });
+        assert_eq!(current.current(), Some(Step::Review(ReviewKind::Security)));
     }
 }
